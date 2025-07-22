@@ -88,19 +88,30 @@ def process_electrons_to_DN(
         for x, y, dE in tqdm(zip(xs, ys, dEs), desc="Processing events"):
             n_electrons = electron_conversion(dE)
             if n_electrons > 0:
+                # Center of high-res patch (event location)
                 x_hi = int(np.floor(x / pixel_size_hi))
                 y_hi = int(np.floor(y / pixel_size_hi))
                 half_patch = kernel_size_hi // 2
 
+                # Build patch
                 patch = np.zeros((kernel_size_hi, kernel_size_hi), dtype=float)
                 spread_electrons_to_patch(patch, half_patch, half_patch, n_electrons, kernel)
-                patch_sum = patch.sum()
 
-                x_lo = int(np.floor(x / pixel_size_lo))
-                y_lo = int(np.floor(y / pixel_size_lo))
-
-                if 0 <= x_lo < det_pixels_lo and 0 <= y_lo < det_pixels_lo:
-                    H_detector[y_lo, x_lo] += patch_sum
+                # Now, for each high-res pixel with electrons, assign to correct DN pixel
+                for dy in range(kernel_size_hi):
+                    for dx in range(kernel_size_hi):
+                        n = patch[dy, dx]
+                        if n == 0:
+                            continue
+                        # Absolute high-res position in microns
+                        x_abs = (x_hi + dx - half_patch) * pixel_size_hi
+                        y_abs = (y_hi + dy - half_patch) * pixel_size_hi
+                        # Corresponding DN pixel (low-res)
+                        x_lo = int(np.floor(x_abs / pixel_size_lo))
+                        y_lo = int(np.floor(y_abs / pixel_size_lo))
+                        # Add to DN map (check bounds!)
+                        if 0 <= x_lo < det_pixels_lo and 0 <= y_lo < det_pixels_lo:
+                            H_detector[y_lo, x_lo] += n
 
     # Gain map
     gain_array = np.loadtxt(gain_txt)[:, 5].reshape((32, 32))
@@ -122,7 +133,7 @@ def process_pid_electrons_zoom(
         pid,
         delta_pids,
         x_center, y_center,         # Center in physical units, e.g., microns
-        region_size_um=20,         # Region width/height in microns (e.g., 20 µm)
+        region_size_um = 20,         # Region width/height in microns (e.g., 20 µm)
         pixel_size_hi=0.1,         # Hi-res pixel size
         kernel_size_hi=50,
         sigma=0.314,
