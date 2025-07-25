@@ -5,6 +5,7 @@ import threading
 import itertools
 import numpy as np
 import tkinter as tk
+import matplotlib.pyplot as plt
 from datetime import datetime
 from tkinter import ttk, filedialog, messagebox
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
@@ -14,6 +15,7 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Circle
 from GCRsim_v02f import CosmicRaySimulation
 from electron_spread import process_electrons_to_DN
+from electron_spread import process_pid_electrons_zoom
 
 def is_delta_of_primary(pid, primary_pid):
     # True if pid is a delta ray of primary_pid
@@ -340,6 +342,25 @@ class Application(tk.Tk):
         ttk.Button(btn_frame, text="Highlight Affected Pixels", command=self.highlight_dn_pixels).pack(side='left', padx=2)
         ttk.Button(btn_frame, text="Reset View", command=self._update_dnmap).pack(side='left', padx=2)
         self.dnmap_canvas.mpl_connect("button_press_event", self._on_dnmap_click)
+        # --- Nonzero pixel count widgets ---
+        # Button to count nonzero pixels
+        self.count_nonzero_btn = ttk.Button(
+            btn_frame,
+            text="Count Nonzero Pixels",
+            command=self.count_nonzero_pixels
+        )
+        self.count_nonzero_btn.pack(side='left', padx=8)
+        
+        # Label and field to show result
+        self.nonzero_result_label = ttk.Label(btn_frame, text="Nonzero pixels: ")
+        self.nonzero_result_label.pack(side='left')
+        self.nonzero_result_value = ttk.Label(btn_frame, text="0")
+        self.nonzero_result_value.pack(side='left', padx=2)
+
+        # Show expected Kruk value
+        N_expected = int(np.floor((7.7e-4 * 4088**2)*(3.4/140)))
+        self.kruk_label = ttk.Label(btn_frame, text=f"Expected: {N_expected} (Kruk et al. 2016)")
+        self.kruk_label.pack(side='left', padx=12)
 
     def export_dnmap_npy(self):
         if self.current_dnmap is None:
@@ -360,6 +381,13 @@ class Application(tk.Tk):
         if not fpath: return
         self.dnmap_fig.savefig(fpath, dpi=150)
         messagebox.showinfo("Exported", f"DN map saved to:\n{fpath}")
+
+    def count_nonzero_pixels(self):
+        if hasattr(self, 'current_dnmap') and self.current_dnmap is not None:
+            count = int(np.count_nonzero(self.current_dnmap > 0))
+            self.nonzero_result_value.config(text=str(count))
+        else:
+            self.nonzero_result_value.config(text="N/A")
 
     def _populate_movie_primary_dropdown(self):
         # Like _populate_primary_pid_dropdown, but for movie mode
@@ -536,15 +564,14 @@ class Application(tk.Tk):
         self._movie_draw_frame(idx)
 
     def _on_dnmap_click(self, event):
-        # Only handle double-click (ignore single clicks for pop-up)
         if not hasattr(event, 'dblclick') or not event.dblclick:
-            return  # Only handle double-clicks
-        
+            return
+
+        if event.inaxes != self.dnmap_ax or self.current_dnmap is None:
+            return
+
         if self.current_streaks is None or not self.current_streaks:
             messagebox.showinfo("No Data", "No simulation streaks are loaded. Run or load a simulation first.")
-            return
-        
-        if event.inaxes != self.dnmap_ax or self.current_dnmap is None:
             return
 
         x_pix, y_pix = event.xdata, event.ydata
@@ -552,7 +579,7 @@ class Application(tk.Tk):
             return
 
         grid_size = self.current_dnmap.shape[0]
-        pixel_size_lo = 10.0  # or your actual low-res pixel size
+        pixel_size_lo = 10.0  # Or your actual low-res pixel size
         x_um = x_pix * pixel_size_lo
         y_um = y_pix * pixel_size_lo
 
@@ -568,19 +595,27 @@ class Application(tk.Tk):
         if not csvfile:
             return
 
-        from electron_spread import process_pid_electrons_zoom
-        H_zoom = process_pid_electrons_zoom(
-            csvfile=csvfile,
-            pid=closest_pid,
-            delta_pids=delta_pids,
-            x_center=x_parent,
-            y_center=y_parent,
-            region_size_um=20.0,     # Or whatever region size you want
-            pixel_size_hi=0.1,
-            kernel_size_hi=50,
-            sigma=0.314
-        )
-        self._popup_zoom_dn_image(H_zoom, x_parent, y_parent, closest_pid)
+        # Show "Rendering..." dialog
+        rendering_dialog = self.show_rendering_dialog("Rendering high-res image...")
+
+        def work():
+            try:
+                H_zoom = process_pid_electrons_zoom(
+                    csvfile=csvfile,
+                    pid=closest_pid,
+                    delta_pids=delta_pids,
+                    x_center=x_parent,
+                    y_center=y_parent,
+                    pixel_size_hi=0.1,
+                    sigma=3.14
+                )
+                # When done, pop up the image and close the dialog
+                self.after(0, lambda: [rendering_dialog.destroy(), self._popup_zoom_dn_image(H_zoom, x_parent, y_parent, closest_pid)])
+            except Exception as e:
+                self.after(0, lambda: [rendering_dialog.destroy(), messagebox.showerror("Error", str(e))])
+
+        # Launch the worker in a thread to keep GUI responsive
+        threading.Thread(target=work, daemon=True).start()
 
     def _find_nearest_parent_pid(self, x_um, y_um, max_dist_um=50):
         """
@@ -619,26 +654,125 @@ class Application(tk.Tk):
         return parent_pid, delta_pids, parent_x, parent_y
 
     def _popup_zoom_dn_image(self, H_zoom, x_um, y_um, pid):
-        """Shows the high-res zoom DN image in a pop-up matplotlib window."""
-        import matplotlib.pyplot as plt
-        fig, ax = plt.subplots(figsize=(6, 6))
-        im = ax.imshow(
-            H_zoom,
-            origin='lower',
-            cmap='gray',
-            interpolation='nearest',
-            extent=[
-                x_um - H_zoom.shape[1]/2 * 0.1,
-                x_um + H_zoom.shape[1]/2 * 0.1,
-                y_um - H_zoom.shape[0]/2 * 0.1,
-                y_um + H_zoom.shape[0]/2 * 0.1,
-            ]
-        )
-        ax.set_title(f"High-Res DN: PID {self.sim.decode_pid(pid)}\n(center={x_um:.1f}, {y_um:.1f} µm)")
-        ax.set_xlabel("x (µm)")
-        ax.set_ylabel("y (µm)")
-        fig.colorbar(im, ax=ax, label="Electrons (arbitrary units)")
-        plt.show()
+        #  Determine region size based on track length 
+        min_region_um = 60.0  # Minimum region size (microns)
+        margin_um = 15.0       # Add a small margin beyond the track ends
+
+        # Try to get positions for this PID
+        positions = None
+        if hasattr(self, '_find_streak_by_pid'):
+            streak = self._find_streak_by_pid(pid)
+            if streak is not None:
+                positions = streak[0]
+
+        if positions and len(positions) > 1:
+            xs, ys, zs = zip(*positions)
+            x_min, x_max = min(xs), max(xs)
+            y_min, y_max = min(ys), max(ys)
+            track_length = max(x_max - x_min, y_max - y_min)
+            region_size_um = max(min_region_um, track_length + 2 * margin_um)
+            x_center = (x_min + x_max) / 2
+            y_center = (y_min + y_max) / 2
+        else:
+            region_size_um = min_region_um
+            x_center, y_center = x_um, y_um
+
+        pixel_size_hi = 0.1
+        N = H_zoom.shape[0]
+        extent = [x_center - (N/2)*pixel_size_hi, x_center + (N/2)*pixel_size_hi,
+            y_center - (N/2)*pixel_size_hi, y_center + (N/2)*pixel_size_hi
+        ]
+        # Optionally crop or pad H_zoom if needed
+        if H_zoom.shape != (N, N):
+            print(f"Reshaping H_zoom from {H_zoom.shape} to ({N},{N})")
+            H_pad = np.zeros((N, N), dtype=H_zoom.dtype)
+            ny, nx = H_zoom.shape
+            sy, sx = min(ny, N), min(nx, N)
+            H_pad[:sy, :sx] = H_zoom[:sy, :sx]
+            H_zoom = H_pad
+
+        # --- Popup window ---
+        popup = tk.Toplevel(self)
+        popup.title(f"High-Res charge diffusion — PID {self.sim.decode_pid(pid)}")
+        popup.geometry("700x700")
+
+        fig, ax = plt.subplots(figsize=(6, 6), dpi=100)
+        im = ax.imshow(H_zoom, origin='lower', cmap='gray', extent=extent)
+        ax.set_title(f"PID {self.sim.decode_pid(pid)}")
+        ax.set_xlabel("x (μm)")
+        ax.set_ylabel("y (μm)")
+        cbar = fig.colorbar(im, ax=ax, label="Electrons")
+
+        canvas = FigureCanvasTkAgg(fig, master=popup)
+        canvas.get_tk_widget().pack(side='top', fill='both', expand=True)
+
+        toolbar = NavigationToolbar2Tk(canvas, popup)
+        toolbar.update()
+        toolbar.pack(side='top', fill='x')
+
+        grid_var = tk.BooleanVar(value=False)
+        def toggle_grid():
+            [l.remove() for l in ax.lines[:]]
+            if grid_var.get():
+                x0, x1 = extent[0], extent[1]
+                y0, y1 = extent[2], extent[3]
+                x_ticks = np.arange(np.floor(x0/10)*10, x1+0.1, 10)
+                y_ticks = np.arange(np.floor(y0/10)*10, y1+0.1, 10)
+                for x in x_ticks:
+                    ax.axvline(x, color='limegreen', lw=0.9, alpha=0.8, zorder=20)
+                for y in y_ticks:
+                    ax.axhline(y, color='limegreen', lw=0.9, alpha=0.8, zorder=20)
+            canvas.draw_idle()
+
+        grid_checkbox = tk.Checkbutton(
+            popup, text="Show 10 μm pixel grid", variable=grid_var, command=toggle_grid)
+        grid_checkbox.pack(side='top', pady=8)
+        toggle_grid()
+
+    # [After grid_checkbox code]
+
+        def find_boundary_coords(arr):
+            from numpy import pad
+            arr = (arr > 0).astype(np.uint8)
+            padded = pad(arr, 1)
+            boundary = (
+                (padded[1:-1, 1:-1] > 0) &
+                (
+                    (padded[ :-2, 1:-1] == 0) |
+                    (padded[2:  , 1:-1] == 0) |
+                    (padded[1:-1,  :-2] == 0) |
+                    (padded[1:-1, 2:  ] == 0)
+                )
+            )
+            y_idx, x_idx = np.where(boundary)
+            return y_idx, x_idx
+
+        boundary_var = tk.BooleanVar(value=False)
+        boundary_plot = [None]
+        def toggle_boundary():
+            if boundary_plot[0]:
+                try:
+                    boundary_plot[0].remove()
+                except Exception:
+                    pass
+                boundary_plot[0] = None
+            if boundary_var.get():
+                yb, xb = find_boundary_coords(H_zoom)
+                ny, nx = H_zoom.shape
+                x_vals = np.linspace(extent[0], extent[1], nx)
+                y_vals = np.linspace(extent[2], extent[3], ny)
+                x_phys = x_vals[xb]
+                y_phys = y_vals[yb]
+                boundary_plot[0] = ax.plot(x_phys, y_phys, 'r.', markersize=1.7, zorder=30, label="Charge extent")[0]
+            canvas.draw_idle()
+        boundary_checkbox = tk.Checkbutton(
+            popup, text="Show charge extent outline", variable=boundary_var, command=toggle_boundary)
+        boundary_checkbox.pack(side='top', pady=2)
+
+        def on_close():
+            plt.close(fig)
+            popup.destroy()
+        popup.protocol("WM_DELETE_WINDOW", on_close)
 
     def predict_flux(self):
         self.flux_button.config(state='disabled')
@@ -870,8 +1004,8 @@ class Application(tk.Tk):
 
         self.traj_ax.clear()
         for positions, pid in streaks_to_plot:
-            if len(positions) < 2: continue
-            xs, ys, zs = zip(*positions)
+            if len(positions) < 2: continue    
+            xs, ys, zs = zip(*positions)                     
             col = self.sim.get_particle_color(pid)
             is_primary = (pid & ((1<<14)-1)) == 0
             alpha = 0.9 if is_primary else 0.4
@@ -1224,17 +1358,19 @@ class Application(tk.Tk):
             self.progress.config(mode='indeterminate'); self.progress.start(10)
         threading.Thread(target=self._run_sim_thread, daemon=True).start()
 
-
     def _run_sim_thread(self):
         full = self.full_sim_var.get()
         if full:
-            hm = np.zeros((self.sim.grid_size,self.sim.grid_size),int)
-            streaks_all=[]; counts=[]
+            streaks_all=[]
+            counts=[]
+            hm = None
             for idx in range(len(CosmicRaySimulation.Z_list)):
                 sim_i = CosmicRaySimulation(species_index=idx, grid_size=self.sim.grid_size,
                                             dt=self.sim.dt, date=self.sim.date,
                                             progress_bar=True, max_workers=self.sim.max_workers)
                 h_i, s_i, c_i = sim_i.run_sim()
+                if hm is None:
+                    hm = np.zeros_like(h_i)
                 hm += h_i; streaks_all.append(s_i); counts.append(c_i)
                 self.after(0, self.progress.step, 1)
             self.current_heatmap, self.current_streaks, self.current_count = hm, streaks_all, sum(counts)
@@ -1436,18 +1572,32 @@ class Application(tk.Tk):
 
     def _update_heatmap(self, data):
         self.heatmap_ax.clear()
+        cell_size = self.sim.cell_size  
         # mask zeros so LogNorm and gray colormap don't show white for missing
         masked = np.ma.masked_equal(data, 0)
-        norm = LogNorm(vmin=masked.min() if masked.min()>0 else 1, vmax=masked.max())
+        nonzero_vals = masked.compressed()
+        if nonzero_vals.size == 0 or np.nanmax(nonzero_vals) <= 0:
+            self.heatmap_ax.set_title("No events to display")
+            self.heatmap_canvas.draw()
+            return
+        vmin = np.nanmin(nonzero_vals)
+        vmax = np.nanmax(nonzero_vals)
+        if vmin <= 0 or not np.isfinite(vmin):
+            vmin = 1e-2  # fallback for logscale
+        if vmax <= vmin:
+            vmax = vmin + 1
+        norm = LogNorm(vmin=vmin, vmax=vmax)
+        arr_shape = data.shape[0]
+        # This will align pixel centers with coordinates
+        extent=[0, arr_shape*self.sim.cell_size, 0, arr_shape*self.sim.cell_size]
         im = self.heatmap_ax.imshow(
             masked,
             cmap='gray',
             origin='lower',
             norm=norm,
-            extent=[0, self.sim.grid_size*self.sim.cell_size,
-                    0, self.sim.grid_size*self.sim.cell_size]
+            extent=extent
         )
-        im.cmap.set_bad(color='black')  # background for masked (zero) values
+        im.cmap.set_bad(color='black')        
         if not hasattr(self, '_heat_cb'):
             self._heat_cb = self.heatmap_ax.figure.colorbar(im, ax=self.heatmap_ax)
         else:
@@ -1732,6 +1882,22 @@ class Application(tk.Tk):
         self.hist_ax.set_title(f"Primary Population vs. Initial Energy\nSpecies: {selected_species}")
         self.hist_ax.grid(True, which="both", ls="--", alpha=0.7)
 
+    def show_rendering_dialog(self, message="Rendering high-res image..."):
+        top = tk.Toplevel(self)
+        top.title("Please wait")
+        top.geometry("270x80")
+        top.resizable(False, False)
+        top.grab_set()  # Makes this modal (blocks interaction)
+        tk.Label(top, text=message, font=("Arial", 12)).pack(pady=16)
+        # You can add a spinning GIF here if you want to get fancy!
+        top.update()
+        return top
+
+
+
+
+
+
     def export_histogram(self):
         fpath = filedialog.asksaveasfilename(defaultextension=".png",
             filetypes=[('PNG Image','*.png')], title="Save histogram as PNG")
@@ -1866,6 +2032,8 @@ class Application(tk.Tk):
         try:
             f = self.current_streaks[0][0][0]
             xs, ys, zs = zip(*f)
+            xs = [x for x in xs]
+            ys = [y for y in ys]
             self.traj_ax.clear()
             self.traj_ax.plot(xs, ys, zs, '-o', markersize=2)
             self.traj_canvas.draw()
