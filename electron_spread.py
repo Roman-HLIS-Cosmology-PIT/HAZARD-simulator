@@ -19,7 +19,26 @@ def electron_conversion(dE, f_eff=2.71, w=2.509):
         return 0
     return nbinom(r, p).rvs()
 
-def gaussian_sum_kernel(size=50, sigma=0.314, 
+def get_kernel_size_hi(sigma, pixel_size_hi, min_sigma_width=20):
+    """
+    Returns the odd integer kernel size (in hi-res pixels), wide enough for sigma (in microns).
+    min_sigma_width: how many sigma to cover; default is 20 (±4σ).
+    """
+    kernel_size_hi = int(np.ceil(min_sigma_width * sigma / pixel_size_hi))
+    if kernel_size_hi % 2 == 0:
+        kernel_size_hi += 1
+    return kernel_size_hi
+
+def get_min_region_size_um(sigma, pixel_size_hi, min_region_um=60, min_sigma_width=8):
+    """
+    Returns minimum region size in microns: big enough for kernel OR at least min_region_um.
+    """
+    kernel_size_hi = get_kernel_size_hi(sigma, pixel_size_hi, min_sigma_width)
+    kernel_size_um = kernel_size_hi * pixel_size_hi
+    return max(min_region_um, kernel_size_um)
+
+
+def gaussian_sum_kernel(size=50, sigma=3.14, 
                        w_list=[0.17519, 0.53146, 0.29335], 
                        c_list=[0.4522, 0.8050, 1.4329]):
     """Return a (size x size) kernel with sum-of-3-Gaussians probabilities."""
@@ -65,20 +84,26 @@ def spread_electrons_to_patch(H, x_pix, y_pix, n_electrons, kernel):
             i = patch_y0 + dy
             j = patch_x0 + dx
             H[i, j] += count
-
+            
 def process_electrons_to_DN(
         csvfile,
         gain_txt,
         det_pixels_lo=4096,
         pixel_size_hi=0.1,
         pixel_size_lo=10.0,
-        kernel_size_hi=50,
         chunksize=100_000,
-        sigma=0.314,
+        sigma=3.14,  # in microns
+        min_region_um=60.0,
+        min_sigma_width=8,
         output_DN_path=None
     ):
-    """Process CSV energy loss events and output a DN map array (optionally saves as .npy)"""
-    kernel = gaussian_sum_kernel(size=kernel_size_hi, sigma=sigma)
+    """
+    Process CSV energy loss events and output a DN map array (optionally saves as .npy).
+    Each electron is mapped to the correct low-res DN pixel.
+    """
+    kernel_size_hi = get_kernel_size_hi(sigma, pixel_size_hi, min_sigma_width)
+    sigma_hi = sigma / pixel_size_hi  # kernel's sigma, in hi-res pixels
+    kernel = gaussian_sum_kernel(size=kernel_size_hi, sigma=sigma_hi)
     H_detector = np.zeros((det_pixels_lo, det_pixels_lo), dtype=float)
 
     for chunk in pd.read_csv(csvfile, sep=',', chunksize=chunksize):
@@ -88,28 +113,27 @@ def process_electrons_to_DN(
         for x, y, dE in tqdm(zip(xs, ys, dEs), desc="Processing events"):
             n_electrons = electron_conversion(dE)
             if n_electrons > 0:
-                # Center of high-res patch (event location)
-                x_hi = int(np.floor(x / pixel_size_hi))
-                y_hi = int(np.floor(y / pixel_size_hi))
+                # Center of high-res patch (event location in high-res pixels)
+                x_hi_center = int(np.floor(x / pixel_size_hi))
+                y_hi_center = int(np.floor(y / pixel_size_hi))
                 half_patch = kernel_size_hi // 2
 
-                # Build patch
+                # Create patch for spreading electrons
                 patch = np.zeros((kernel_size_hi, kernel_size_hi), dtype=float)
                 spread_electrons_to_patch(patch, half_patch, half_patch, n_electrons, kernel)
 
-                # Now, for each high-res pixel with electrons, assign to correct DN pixel
+                # For every high-res pixel in the patch:
                 for dy in range(kernel_size_hi):
                     for dx in range(kernel_size_hi):
                         n = patch[dy, dx]
                         if n == 0:
                             continue
-                        # Absolute high-res position in microns
-                        x_abs = (x_hi + dx - half_patch) * pixel_size_hi
-                        y_abs = (y_hi + dy - half_patch) * pixel_size_hi
-                        # Corresponding DN pixel (low-res)
-                        x_lo = int(np.floor(x_abs / pixel_size_lo))
-                        y_lo = int(np.floor(y_abs / pixel_size_lo))
-                        # Add to DN map (check bounds!)
+                        # Compute physical coordinates of this high-res pixel (in microns)
+                        x_hi_abs = (x_hi_center + dx - half_patch) * pixel_size_hi
+                        y_hi_abs = (y_hi_center + dy - half_patch) * pixel_size_hi
+                        # Map to low-res (DN) pixel
+                        x_lo = int(np.floor(x_hi_abs / pixel_size_lo))
+                        y_lo = int(np.floor(y_hi_abs / pixel_size_lo))
                         if 0 <= x_lo < det_pixels_lo and 0 <= y_lo < det_pixels_lo:
                             H_detector[y_lo, x_lo] += n
 
@@ -132,25 +156,37 @@ def process_pid_electrons_zoom(
         csvfile,
         pid,
         delta_pids,
-        x_center, y_center,         # Center in physical units, e.g., microns
-        region_size_um = 20,         # Region width/height in microns (e.g., 20 µm)
-        pixel_size_hi=0.1,         # Hi-res pixel size
-        kernel_size_hi=50,
-        sigma=0.314,
-        gain=None,                 # Optional: can skip gain for zoom-in, or load local patch if needed
+        x_center, y_center,            # microns
+        region_size_um=None,           # If None, calculate automatically
+        pixel_size_hi=0.1,
+        sigma=3.14,                    # microns
+        min_region_um=60.0,
+        min_sigma_width=8,
+        gain=None,
         chunksize=100_000
     ):
     """
     Returns a hi-res array (mini-image) centered on (x_center, y_center)
     for the selected PID and its deltas, for interactive popup display.
-    """
-    kernel = gaussian_sum_kernel(size=kernel_size_hi, sigma=sigma)
-    n_pix = int(region_size_um / pixel_size_hi)
-    H_zoom = np.zeros((n_pix, n_pix), dtype=float)
+    """ 
+    # -- Kernel size logic --
+    kernel_size_hi = get_kernel_size_hi(sigma, pixel_size_hi, min_sigma_width)
+    sigma_hi = sigma / pixel_size_hi
+    kernel = gaussian_sum_kernel(size=kernel_size_hi, sigma=sigma_hi)
+
+    # Determine region size: large enough for track, OR at least kernel width
+    if region_size_um is None:
+        region_size_um = get_min_region_size_um(sigma, pixel_size_hi, min_region_um, min_sigma_width)
+    else:
+        region_size_um = max(region_size_um, get_min_region_size_um(sigma, pixel_size_hi, min_region_um, min_sigma_width))
     
+    n_pix = int(np.ceil(region_size_um / pixel_size_hi))
+    if n_pix % 2 == 0:
+        n_pix += 1
+
+    H_zoom = np.zeros((n_pix, n_pix), dtype=float)
     x0_um = x_center - region_size_um / 2
     y0_um = y_center - region_size_um / 2
-    
     wanted_pids = set([pid] + list(delta_pids))
 
     for chunk in pd.read_csv(csvfile, sep=',', chunksize=chunksize):
