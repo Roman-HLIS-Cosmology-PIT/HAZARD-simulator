@@ -418,7 +418,6 @@ class CosmicRaySimulation:
         self.cell_size = cell_size
         self.cell_depth = cell_depth
         self.step_size = step_size
-
         self.date = date
         self.historic_df = historic_df
         # Set M_polar based on the year and historical M data, if available.
@@ -939,7 +938,7 @@ class CosmicRaySimulation:
     def relative_velocity(self, energy, m):
         beta = (1/(energy+m)) * (np.sqrt(energy*(energy+2*m)))
         return max(beta, 1e-20)
-    
+
     def propagate_delta_rays(self, heatmap, x, y, z, theta, phi, init_en, PID, streaks):
         """
         Propagate a secondary (delta ray) particle.
@@ -1168,7 +1167,6 @@ class CosmicRaySimulation:
                             current_vels, new_vels, energy_changes, positions[0], positions[-1], init_en,
                             current_energy, delta_ray_counter - 1, True ) )
 
-
     def get_particle_color(self, PID):
         """
         Given an encoded PID, extract the primary GCR portion and return the corresponding
@@ -1262,7 +1260,26 @@ class CosmicRaySimulation:
                 primary_counter += 1
                 self.propagate_GCR(heatmap, x, y, theta, phi, init_en*1e-6, encoded_PID, streaks)
             species_streaks.append(streaks)
-        
+        pad_pixels = 4
+        heatmap = np.pad(heatmap, pad_width=pad_pixels, mode='constant', constant_values=0)
+        pad_um = pad_pixels * self.cell_size
+
+        for streak_bin in species_streaks:
+            for i, streak in enumerate(streak_bin):
+                positions = streak[0]
+                # Pad all positions
+                for j in range(len(positions)):
+                    x, y, *rest = positions[j]
+                    positions[j] = (x + pad_um, y + pad_um, *rest)
+                # Pad start_pos and end_pos (indices 11, 12 in the tuple)
+                streak_list = list(streak)
+                start_pos = streak_list[11]
+                streak_list[11] = (start_pos[0] + pad_um, start_pos[1] + pad_um, *start_pos[2:])
+                end_pos = streak_list[12]
+                streak_list[12] = (end_pos[0] + pad_um, end_pos[1] + pad_um, *end_pos[2:])
+                # Write back
+                streak_bin[i] = tuple(streak_list)
+
         return heatmap, species_streaks, primary_gcr_count
         
     def _propagate_delta_ray_threadsafe(self, heatmap, x, y, z, theta, phi, init_en, PID, streaks):
@@ -1274,7 +1291,7 @@ class CosmicRaySimulation:
     def build_energy_loss_csv(self, streaks_list, csv_filename):
         """
         For each unique PID in streaks_list, use self.get_positions_by_pid to pull out
-        the full trajectory positions and the list of energy‐change tuples, then
+        the full trajectory positions and the list of energy change tuples, then
         write one row per step to a CSV with columns:
           PID, step, x, y, z, dE, delta_energy
 
@@ -1287,7 +1304,7 @@ class CosmicRaySimulation:
             Output filename for the CSV.
         """
         records = []
-        # 1) Find all unique PIDs present in the simulation
+        # Find all unique PIDs present in the simulation
         unique_pids = {
             streak[1]
             for group in streaks_list
@@ -1295,7 +1312,7 @@ class CosmicRaySimulation:
             for streak in sublist
         }
 
-        # 2) For each PID, extract trajectory and energy changes
+        #  For each PID, extract trajectory and energy changes
         for pid in unique_pids:
             positions_lists, _, energy_change_lists = self.get_positions_by_pid(streaks_list, pid)
             for positions, e_changes in zip(positions_lists, energy_change_lists):
@@ -1309,14 +1326,11 @@ class CosmicRaySimulation:
                         'dE': dE,
                         'delta_energy': delta
                     })
-
-
-        # 3) Build DataFrame and write to CSV
+        #  Build DataFrame and write to CSV
         df = pd.DataFrame.from_records(records,
                                        columns=['PID', 'step', 'x', 'y', 'z', 'dE', 'delta_energy'])
         df.to_csv(csv_filename, index=False)
         print(f"Saved {len(df)} energy‐loss records to '{csv_filename}'")
-
 
     def get_positions_by_pid(self, streaks_list, target_pid):
         """
