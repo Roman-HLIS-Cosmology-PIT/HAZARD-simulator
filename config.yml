@@ -1,0 +1,16 @@
+# config.yml
+# Configuration for running a single-species CosmicRaySimulation
+
+species_index: 1           # Index into Z_list/m_list; 0=electron/e-,1=proton/H, 2=He, etc.
+grid_size: 64              # Number of pixels per side of the detector grid
+cell_size: 10              # Pixel side length (microns)
+cell_depth: 5              # Pixel depth (microns)
+step_size: 0.1             # Step size for propagation (microns)
+date: 2026.123             # Simulation date as fraction of year (float, i.e., 2020.352)
+dt: 3.04                   # Time window per run (seconds)
+progress_bar: false        # Show tqdm progress bar
+max_workers: 4             # Number of threads for delta ray propagation (None for default)
+
+# File/data dependencies
+color_list_file: "rgb_color_list.txt"
+sunspot_monthly_file: "SN_m_tot_V2.0.csv"
