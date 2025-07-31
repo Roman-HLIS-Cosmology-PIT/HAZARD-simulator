@@ -1,4 +1,4 @@
-#GCR Simulation Framework — Main Scripts Overview
+#GCR Simulation Framework — Main Scripts Overview (WORK IN PROGRESS)
 
 This repository implements a modular simulation pipeline for studying galactic cosmic ray (GCR) interactions with space-based detectors, specifically tailored for HgCdTe infrared arrays (e.g., as used in the Nancy Grace Roman Space Telescope). The framework enables detailed Monte Carlo simulations of particle events and advanced visualization of charge diffusion and detector response.
 
