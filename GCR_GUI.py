@@ -1,11 +1,18 @@
 import os
 import csv
 import h5py
+import emcee
+import corner
 import threading
 import itertools
 import numpy as np
 import tkinter as tk
 import matplotlib.pyplot as plt
+from numpy import pad
+from numpy.fft import fftshift, fft2
+from scipy.optimize import curve_fit
+from scipy.special import gammaln
+from scipy.stats import norm
 from datetime import datetime
 from tkinter import ttk, filedialog, messagebox
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
@@ -16,6 +23,10 @@ from matplotlib.patches import Circle
 from GCRsim_v02f import CosmicRaySimulation
 from electron_spread import process_electrons_to_DN
 from electron_spread import process_pid_electrons_zoom
+
+# Define a list of colors or use a colormap
+FIT_COLORS = ['r', 'g', 'b', 'm', 'c', 'y', 'k']  # you can expand this
+color_cycle = itertools.cycle(FIT_COLORS)  # will loop forever
 
 def is_delta_of_primary(pid, primary_pid):
     # True if pid is a delta ray of primary_pid
@@ -29,6 +40,10 @@ def is_delta_of_primary(pid, primary_pid):
 class Application(tk.Tk):
     def __init__(self):
         super().__init__()
+        self.fits = []            # to track the fit lines
+        self.color_cycle = itertools.cycle(FIT_COLORS)
+        self.fit_counter = 1      # for unique legend labels
+
         self.title("GCRsim(alpha-build)")
         self.geometry("980x700")
 
@@ -53,7 +68,31 @@ class Application(tk.Tk):
         self._ensure_sim()
         self.plot_wolf_number()
         self.current_dnmap = None
+        self.create_noise_tab()
 
+    def plot_new_fit(self, x, y):
+        # Get the next color from the color cycle
+        color = next(self.color_cycle)
+        label = f"Fit #{self.fit_counter}"
+        # Plot the fit and store the line object
+        line, = self.noise_hist_ax.plot(x, y, color=color, linewidth=2, label=label)
+        self.fits.append(line)
+        self.fit_counter += 1
+
+        # Build the legend with all current fit lines and their labels
+        handles = self.fits
+        labels = [l.get_label() for l in self.fits]
+        self.noise_hist_ax.legend(handles, labels)
+        self.noise_canvas.draw()
+
+    def clear_fits(self):
+        # Optionally: clear any fit-related lists/counters, e.g.
+        self.fits.clear()
+        self.fit_counter = 1
+        # Hard-reset the noise histogram and power spectrum axes
+        self.run_noise_analysis()  # Replots just the histogram & PS for the current DN map
+        self.color_cycle = itertools.cycle(FIT_COLORS)
+   
     def create_menu(self):
         menubar = tk.Menu(self)
         filemenu = tk.Menu(menubar, tearoff=0)
@@ -84,6 +123,7 @@ class Application(tk.Tk):
         self.tab_advanced = ttk.Frame(self.notebook)
         self.tab_log = ttk.Frame(self.notebook)
         self.tab_movie = ttk.Frame(self.notebook)
+        self.tab_noise = ttk.Frame(self.notebook)
         tabs = [
             (self.tab_control, "Simulation"),
             (self.tab_heatmap, "Heatmap"),
@@ -92,6 +132,7 @@ class Application(tk.Tk):
             (self.tab_analysis, "Analysis"),
             (self.tab_dnmap, "Pixelated SCA"),
             (self.tab_histogram, "Histograms"),
+            (self.tab_noise, "Noise Modeling"),
             (self.tab_advanced, "Advanced Config"),
             (self.tab_log, "Log"),
         ]
@@ -170,6 +211,46 @@ class Application(tk.Tk):
         self.wolf_nav = NavigationToolbar2Tk(self.wolf_canvas, frame)
         self.wolf_nav.update()
         self.wolf_nav.pack(side='top', fill='x', padx=10, pady=(0, 3))
+
+    def create_noise_tab(self):
+        frame = self.tab_noise
+        # Controls for re-running analysis
+        control_row = ttk.Frame(frame)
+        control_row.pack(side='top', fill='x', padx=5, pady=5)
+        ttk.Button(control_row, text="Analyze DN Map", command=self.run_noise_analysis).pack(side='left')
+        ttk.Button(control_row, text="Show Corner Plot", command=self.show_noise_corner_plot).pack(side='left', padx=8)
+        self.show_chain_btn = tk.Button(self.tab_noise, text="Show Chain Convergence", command=self.show_chain_convergence_popup)
+        self.show_chain_btn.pack(pady=4)  # Or use grid if you prefer
+
+        self.nwalkers_var = tk.IntVar(value=36)
+        self.nsteps_var = tk.IntVar(value=700)
+        # Add a row for the walkers/steps controls using a sub-frame and grid 
+        walker_frame = ttk.Frame(frame)
+        walker_frame.pack(side='top', fill='x', padx=5, pady=5)
+
+        tk.Label(walker_frame, text="Walkers:").grid(row=0, column=0, sticky="e")
+        tk.Entry(walker_frame, textvariable=self.nwalkers_var, width=6).grid(row=0, column=1)
+
+        tk.Label(walker_frame, text="Steps:").grid(row=0, column=2, sticky="e")
+        tk.Entry(walker_frame, textvariable=self.nsteps_var, width=6).grid(row=0, column=3)
+
+        self.send_walkers_btn = tk.Button(walker_frame, text="Send Walkers", command=self.run_walkers)
+        self.send_walkers_btn.grid(row=0, column=4, padx=5, pady=5)
+
+        # Matplotlib Figure for Histogram
+        self.noise_fig = Figure(figsize=(9, 4))
+        self.noise_hist_ax = self.noise_fig.add_subplot(121)
+        self.noise_ps_ax = self.noise_fig.add_subplot(122)
+        self.noise_canvas = FigureCanvasTkAgg(self.noise_fig, master=frame)
+        self.noise_canvas.get_tk_widget().pack(fill='both', expand=True)
+
+        # Optional: Display text summary of fit parameters
+        self.noise_results_box = tk.Text(frame, height=6, width=90, font=('Consolas', 10))
+        self.noise_results_box.pack(fill='x', padx=10, pady=4)
+        self.noise_results_box.config(state='disabled')
+
+        clear_btn = ttk.Button(control_row, text="Clear Fits", command=self.clear_fits)
+        clear_btn.pack(side='left')
 
     def create_heatmap_tab(self):
         fig = Figure(figsize=(5,5))
@@ -486,6 +567,8 @@ class Application(tk.Tk):
                 self.notebook.select(self.tab_dnmap)
             except Exception as e:
                 messagebox.showerror("Error", f"Could not load DN map:\n{e}")
+                
+        self.run_noise_analysis()
 
     def _movie_clear(self):
         self.movie_ax.clear()
@@ -563,6 +646,47 @@ class Application(tk.Tk):
         self.movie_frame_idx = idx
         self._movie_draw_frame(idx)
 
+    def show_chain_convergence_popup(self):
+        # Names must match parameter order in your chain
+        param_names = [r"$w_1$", r"$w_2$", r"$w_3$", r"$c_1$", r"$c_2$", r"$c_3$", r"$\mu$", r"$\sigma$", r"$A$"]
+
+        popup = tk.Toplevel(self.master)
+        popup.title("MCMC Chain Convergence")
+        popup.geometry("600x400")
+
+        # Dropdown
+        var = tk.StringVar(value=param_names[0])
+        dropdown = ttk.Combobox(popup, textvariable=var, values=param_names, state="readonly", width=8)
+        dropdown.pack(pady=5)
+
+        # Matplotlib Figure
+        fig, ax = plt.subplots(figsize=(6,3), dpi=100)
+        canvas = FigureCanvasTkAgg(fig, master=popup)
+        canvas.get_tk_widget().pack(fill='both', expand=True)
+
+        # Plot function
+        def plot_chain(param_name):
+            idx = param_names.index(param_name)
+            chains = self.sampler.get_chain()[:, :, idx]  # shape: (steps, walkers)
+            ax.clear()
+            for walker in range(chains.shape[1]):
+                ax.plot(chains[:, walker], alpha=0.5, lw=0.7)
+            ax.set_xlabel("Step")
+            ax.set_ylabel(param_name)
+            ax.set_title(f"Chain Trace for {param_name}")
+            fig.tight_layout()
+            canvas.draw()
+
+        # Initial plot
+        plot_chain(var.get())
+
+        # Update plot on dropdown selection
+        def on_select(event):
+            plot_chain(var.get())
+        dropdown.bind("<<ComboboxSelected>>", on_select)
+
+
+
     def _on_dnmap_click(self, event):
         if not hasattr(event, 'dblclick') or not event.dblclick:
             return
@@ -606,7 +730,7 @@ class Application(tk.Tk):
                     delta_pids=delta_pids,
                     x_center=x_parent,
                     y_center=y_parent,
-                    pixel_size_hi=0.1,
+                    pixel_size_hi=1.0,
                     sigma=3.14
                 )
                 # When done, pop up the image and close the dialog
@@ -677,7 +801,7 @@ class Application(tk.Tk):
             region_size_um = min_region_um
             x_center, y_center = x_um, y_um
 
-        pixel_size_hi = 0.1
+        pixel_size_hi = 1.0
         N = H_zoom.shape[0]
         extent = [x_center - (N/2)*pixel_size_hi, x_center + (N/2)*pixel_size_hi,
             y_center - (N/2)*pixel_size_hi, y_center + (N/2)*pixel_size_hi
@@ -732,7 +856,6 @@ class Application(tk.Tk):
     # [After grid_checkbox code]
 
         def find_boundary_coords(arr):
-            from numpy import pad
             arr = (arr > 0).astype(np.uint8)
             padded = pad(arr, 1)
             boundary = (
@@ -833,7 +956,7 @@ class Application(tk.Tk):
                 sim = CosmicRaySimulation(
                     grid_size=grid_size,
                     dt=exposure_time,
-                    date=mapped_date,     # <-- this is the only key difference!
+                    date=mapped_date,    
                     historic_df=self.sim.historic_df,
                     progress_bar=True
                 )
@@ -893,7 +1016,6 @@ class Application(tk.Tk):
         self.flux_ax.set_xlabel("Date")
         self.flux_ax.set_ylabel("Predicted H+ GCR Count")
         self.flux_ax.set_title('Galactic Cosmic Ray Flux Forecast', pad=18)
-        # Add subtitle just below the main title using ax.text
         self.flux_ax.text(0.5, 1.02, subtitle, ha='center', va='bottom', fontsize='medium', transform=self.flux_ax.transAxes)
         self.flux_ax.legend()
         self.flux_canvas.draw()
@@ -1143,6 +1265,7 @@ class Application(tk.Tk):
             self.after(0, self._update_dnmap)
 
         threading.Thread(target=do_conversion, daemon=True).start()
+        self.run_noise_analysis()
 
     def create_analysis_tab(self):
         frame = self.tab_analysis
@@ -1740,10 +1863,18 @@ class Application(tk.Tk):
 
         ttk.Label(controls, text="Histogram:").pack(side='left')
         self.histogram_type = tk.StringVar(value="Delta Ray Energies")
-        self.histogram_options = ["Delta Ray Energies", "Primary Energy Distribution"]
+        self.histogram_options = [
+            "Delta Ray Energies", 
+            "Primary Energy Distribution",
+            "Total Energy Deposition Spectrum",
+            "Species-Resolved Energy Spectrum",
+            "Parent-vs-Delta Energy Spectrum",
+            "Per-Primary Energy Spectrum"
+        ]
+
         self.histogram_combobox = ttk.Combobox(
             controls, textvariable=self.histogram_type, state='readonly',
-            values=self.histogram_options, width=28
+            values=self.histogram_options, width=38
         )
         
         self.hist_species_var = tk.StringVar()
@@ -1808,9 +1939,158 @@ class Application(tk.Tk):
             else:
                 self.hist_species_combobox.state(['disabled'])
             self.plot_primary_energy_histogram()
+        elif hist_type == "Total Energy Deposition Spectrum":
+            self.hist_species_combobox.state(['disabled'])
+            self.plot_total_energy_spectrum()
+        elif hist_type == "Species-Resolved Energy Spectrum":
+            self._populate_hist_species_dropdown()
+            if self.hist_species_combobox['values']:
+                self.hist_species_combobox.state(['!disabled'])
+            self.plot_species_resolved_spectrum()
+        elif hist_type == "Parent-vs-Delta Energy Spectrum":
+            self.hist_species_combobox.state(['disabled'])
+            self.plot_parent_vs_delta_spectrum()
+        elif hist_type == "Per-Primary Energy Spectrum":
+            self.hist_species_combobox.state(['disabled'])
+            self.plot_per_primary_spectrum()
+
 
         self.hist_fig.tight_layout()
         self.hist_canvas.draw()
+        
+    @staticmethod
+    def flatten_energy_events_with_pid(streaks):
+        """
+        Returns a list of tuples: (x, y, dE, pid) for all energy depositions.
+        """
+        all_events = []
+        for sp in streaks or []:
+            for bin in sp:
+                for st in bin:
+                    positions = st[0]
+                    pid = st[1]
+                    energy_changes = st[10]
+                    for i, (dE, *rest) in enumerate(energy_changes):
+                        x, y, z = positions[i] if i < len(positions) else (np.nan, np.nan, np.nan)
+                        all_events.append((x, y, dE, pid))
+        return all_events
+
+    def plot_total_energy_spectrum(self, bins=100):
+        streaks = self.current_streaks
+        if not streaks:
+            self.hist_ax.set_title("No data loaded")
+            return
+        events = self.flatten_energy_events_with_pid(streaks)
+        dEs = [abs(ev[2]) for ev in events if ev[2] != 0]
+        if not dEs:
+            self.hist_ax.set_title("No energy depositions found")
+            return
+        bins = np.logspace(np.log10(min(dEs)), np.log10(max(dEs)), bins)
+        self.hist_ax.hist(dEs, bins=bins, color='seagreen', alpha=0.75, edgecolor='black')
+        self.hist_ax.set_xscale('log'); self.hist_ax.set_yscale('log')
+        self.hist_ax.set_xlabel("Deposited Energy (MeV)")
+        self.hist_ax.set_ylabel("Event Count")
+        self.hist_ax.set_title("Total Energy Deposition Spectrum")
+        self.hist_ax.grid(True, which="both", ls="--", alpha=0.7)
+
+    def plot_species_resolved_spectrum(self, bins=70):
+        streaks = self.current_streaks
+        if not streaks:
+            self.hist_ax.set_title("No data loaded")
+            return
+        events = self.flatten_energy_events_with_pid(streaks)
+        # Build mapping from PID to species index
+        species_idx_map = {}
+        for idx, sp in enumerate(streaks):
+            for bin in sp:
+                for st in bin:
+                    pid = st[1]
+                    species_idx_map[pid] = idx
+        n_species = len(streaks)
+        species_dEs = [[] for _ in range(n_species)]
+        for ev in events:
+            dE, pid = abs(ev[2]), ev[3]
+            idx = species_idx_map.get(pid, None)
+            if idx is not None:
+                species_dEs[idx].append(dE)
+        bins_all = [dE for sub in species_dEs for dE in sub]
+        if not bins_all:
+            self.hist_ax.set_title("No energy depositions found")
+            return
+        bins = np.logspace(np.log10(max(min(bins_all), 1e-4)), np.log10(max(bins_all)), bins)
+        # Use a colormap that can scale to n_species
+        colormap = plt.colormaps['tab20']  # or 'tab20', 'hsv', etc.
+        colors = [colormap(i) for i in np.linspace(0, 20, n_species)]
+        handles = []            
+        for idx, dEs in enumerate(species_dEs):
+            if not dEs:
+                continue
+            label = self.sim.species_names.get(idx, f"Species {idx}")
+            color = colors[idx]
+            self.hist_ax.hist(
+                dEs, bins=bins, histtype='step', color=color, label=label, linewidth=1.7, alpha=0.98
+            )
+            handles.append(handles)
+        self.hist_ax.set_xscale('log')
+        self.hist_ax.set_yscale('log')
+        self.hist_ax.set_xlabel("Deposited Energy (MeV)")
+        self.hist_ax.set_ylabel("Event Count")
+        self.hist_ax.set_title("Species-Resolved Energy Deposition Spectra")
+        # Make the legend larger and easier to read
+        self.hist_ax.legend(fontsize='medium', loc='best', ncol=2 if n_species > 7 else 1, frameon=True)
+        self.hist_ax.grid(True, which="both", ls="--", alpha=0.7)
+
+    def plot_parent_vs_delta_spectrum(self, bins=100):
+        streaks = self.current_streaks
+        if not streaks:
+            self.hist_ax.set_title("No data loaded")
+            return
+        events = self.flatten_energy_events_with_pid(streaks)
+        delta_mask = (1 << 14) - 1
+        dEs_primary = [abs(ev[2]) for ev in events if (ev[3] & delta_mask) == 0 and ev[2] != 0]
+        dEs_delta = [abs(ev[2]) for ev in events if (ev[3] & delta_mask) > 0 and ev[2] != 0]
+        if not (dEs_primary or dEs_delta):
+            self.hist_ax.set_title("No events found")
+            return
+        all_dEs = dEs_primary + dEs_delta
+        bins = np.logspace(np.log10(max(min(all_dEs), 1e-4)), np.log10(max(all_dEs)), bins)
+        self.hist_ax.hist(dEs_primary, bins=bins, color='royalblue', alpha=0.6, edgecolor='black', label='Primary')
+        self.hist_ax.hist(dEs_delta, bins=bins, color='orange', alpha=0.6, edgecolor='black', label='Delta')
+        self.hist_ax.set_xscale('log'); self.hist_ax.set_yscale('log')
+        self.hist_ax.set_xlabel("Deposited Energy (MeV)")
+        self.hist_ax.set_ylabel("Event Count")
+        self.hist_ax.set_title("Parent vs. Delta Ray Energy Spectrum")
+        self.hist_ax.legend()
+        self.hist_ax.grid(True, which="both", ls="--", alpha=0.7)
+
+    def plot_per_primary_spectrum(self, bins=50, max_primaries=10):
+        streaks = self.current_streaks
+        if not streaks:
+            self.hist_ax.set_title("No data loaded")
+            return
+        events = self.flatten_energy_events_with_pid(streaks)
+        # Find all unique parent PIDs (delta==0)
+        delta_mask = (1 << 14) - 1
+        parent_pids = sorted({ev[3] for ev in events if (ev[3] & delta_mask) == 0})
+        if not parent_pids:
+            self.hist_ax.set_title("No primaries found")
+            return
+        # For each primary, get all dE from itself + its deltas
+        for i, parent_pid in enumerate(parent_pids[:max_primaries]):
+            child_pids = set([ev[3] for ev in events if is_delta_of_primary(ev[3], parent_pid)] + [parent_pid])
+            dEs = [abs(ev[2]) for ev in events if ev[3] in child_pids and ev[2] != 0]
+            if not dEs: continue
+            bins_ = np.logspace(np.log10(max(min(dEs), 1e-4)), np.log10(max(dEs)), bins)
+            label = f"PID {self.sim.decode_pid(parent_pid)}"
+            self.hist_ax.hist(dEs, bins=bins_, histtype='step', label=label, alpha=0.85)
+        self.hist_ax.set_xscale('log'); self.hist_ax.set_yscale('log')
+        self.hist_ax.set_xlabel("Deposited Energy (MeV)")
+        self.hist_ax.set_ylabel("Event Count")
+        self.hist_ax.set_title("Per-Primary Energy Spectra (First N primaries)")
+        self.hist_ax.legend(fontsize='x-small')
+        self.hist_ax.grid(True, which="both", ls="--", alpha=0.7)
+
+
 
     def plot_delta_ray_energy_histogram(self):
         streaks = self.current_streaks
@@ -2008,6 +2288,180 @@ class Application(tk.Tk):
             if v == species_name:
                 return k
         return None
+
+    def run_walkers(self):
+        # Unpack the data that run_noise_analysis prepared
+        log_pixels = self.log_pixels
+        log_bin_centers = self.log_bin_centers
+        hist_vals = self.hist_vals
+
+        # --- Sum-of-Gaussians model and log-prob as before ---
+        def sum_of_gaussians(x, w1, w2, w3, c1, c2, c3, mu, sigma, amp):
+            ws = np.abs([w1, w2, w3])
+            ws /= ws.sum()
+            w1, w2, w3 = ws
+            gauss1 = w1 * np.exp(-0.5 * ((x - mu) / (c1 * sigma)) ** 2) / (c1 * sigma)
+            gauss2 = w2 * np.exp(-0.5 * ((x - mu) / (c2 * sigma)) ** 2) / (c2 * sigma)
+            gauss3 = w3 * np.exp(-0.5 * ((x - mu) / (c3 * sigma)) ** 2) / (c3 * sigma)
+            return amp * (gauss1 + gauss2 + gauss3)
+
+        def log_prior(theta):
+            w1, w2, w3, c1, c2, c3, mu, sigma, amp = theta
+            if not (0 < w1 < 2 and 0 < w2 < 2 and 0 < w3 < 2):
+                return -np.inf
+            if not (0.1 < c1 < 2 and 0.1 < c2 < 2 and 0.1 < c3 < 2):
+                return -np.inf
+            if not (log_pixels.min() < mu < log_pixels.max()):
+                return -np.inf
+            if not (0.01 < sigma < 2):
+                return -np.inf
+            if not (amp > 0):
+                return -np.inf
+            return 0.0
+
+        def log_likelihood(theta, x, y):
+            model = sum_of_gaussians(x, *theta)
+            model = np.clip(model, 1e-10, np.inf)
+            return np.sum(y * np.log(model) - model - gammaln(y + 1))
+
+        def log_prob(theta, x, y):
+            lp = log_prior(theta)
+            if not np.isfinite(lp):
+                return -np.inf
+            return lp + log_likelihood(theta, x, y)
+
+        # Initial guess
+        w_init = [0.33, 0.33, 0.34]
+        c_init = [0.5, 1.0, 1.5]
+        mu_init = np.median(log_pixels)
+        sigma_init = np.std(log_pixels)
+        amp_init = hist_vals.max()
+        p0 = np.array([*w_init, *c_init, mu_init, sigma_init, amp_init])
+
+        nwalkers = self.nwalkers_var.get()
+        nsteps = self.nsteps_var.get()
+        ndim = 9
+        pos = p0 + 1e-2 * np.random.randn(nwalkers, ndim)
+
+        # Run the sampler
+        sampler = emcee.EnsembleSampler(nwalkers, ndim, log_prob, args=(log_bin_centers, hist_vals))
+        sampler.run_mcmc(pos, nsteps, progress=True, progress_kwargs={"desc": "MCMC: Sending out walkers..."})
+        self.sampler = sampler
+
+        # Autocorr and thinning (as before)
+        try:
+            tau = sampler.get_autocorr_time()
+            burn_in = int(10 * np.max(tau))
+            thin = int(0.5 * np.min(tau))
+        except emcee.autocorr.AutocorrError:
+            print("Warning: Chain too short to estimate autocorrelation reliably.")
+            burn_in = 150
+            thin = 2
+
+        samples = sampler.get_chain(discard=burn_in, thin=thin, flat=True)
+
+        # Results, plot, and storage (copy your logic here)
+        w1_m, w2_m, w3_m, c1_m, c2_m, c3_m, mu_m, sigma_m, amp_m = np.median(samples, axis=0)
+        w_fit = np.abs([w1_m, w2_m, w3_m])
+        w_fit /= w_fit.sum()
+        c_fit = [c1_m, c2_m, c3_m]
+
+        # Save samples for plotting
+        self.noise_samples = samples
+
+        # Plot fit on existing histogram
+        fit_curve = sum_of_gaussians(log_bin_centers, w1_m, w2_m, w3_m, c1_m, c2_m, c3_m, mu_m, sigma_m, amp_m)
+        self.noise_hist_ax.plot(10**log_bin_centers, fit_curve, 'r-', linewidth=2, label='Sum-of-3-Gaussians fit')
+        self.noise_hist_ax.legend()
+        self.noise_canvas.draw()
+
+        # Update textbox (same as before)
+        self.noise_results_box.config(state='normal')
+        self.noise_results_box.delete('1.0','end')
+        self.noise_results_box.insert('1.0', f"Bayesian multi-Gaussian noise model fit:\n")
+        self.noise_results_box.insert('end', f"  Posterior medians (in log10(DN)):\n")
+        self.noise_results_box.insert('end', f"    mu = {mu_m:.3f}\n")
+        self.noise_results_box.insert('end', f"    sigma = {sigma_m:.3f}\n")
+        self.noise_results_box.insert('end', f"    amp = {amp_m:.1f}\n")
+        self.noise_results_box.insert('end', f"  Fitted weights (w_i):   " + ', '.join(f"{w:.4f}" for w in w_fit) + "\n")
+        self.noise_results_box.insert('end', f"  Fitted size scalings (c_i): " + ', '.join(f"{c:.4f}" for c in c_fit) + "\n")
+        self.noise_results_box.insert('end', f"  (All parameters shown are posterior medians; model and plot are in log10(DN) space)\n")
+        self.noise_results_box.config(state='disabled')
+
+    def run_noise_analysis(self):
+        # Extract valid pixels
+        if not hasattr(self, 'current_dnmap') or self.current_dnmap is None:
+            self.noise_hist_ax.clear(); self.noise_ps_ax.clear()
+            self.noise_hist_ax.set_title("No DN map loaded")
+            self.noise_canvas.draw()
+            return
+        dnmap = self.current_dnmap
+        pixels = dnmap[np.isfinite(dnmap) & (dnmap > 0)]
+
+        # Plot histogram
+        self.noise_hist_ax.clear()
+        bins = np.logspace(np.log10(max(pixels.min(), 1e-4)), np.log10(pixels.max()), 70)
+        hist_vals, bin_edges, _ = self.noise_hist_ax.hist(
+            pixels, bins=bins, color='blue', alpha=0.6, histtype='step', lw=1.7
+        )
+        self.noise_hist_ax.set_xscale('log')
+        self.noise_hist_ax.set_xlabel("DN value")
+        self.noise_hist_ax.set_ylabel("Pixel count")
+        self.noise_hist_ax.set_title("DN Histogram")
+        bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+        # Power spectrum
+        self.noise_ps_ax.clear()
+        image = dnmap - np.nanmean(dnmap)
+        image[np.isnan(image)] = 0
+        ps = np.abs(np.fft.fftshift(np.fft.fft2(image)))**2
+        self.noise_ps_ax.imshow(np.log10(ps + 1), origin='lower', cmap='magma')
+        self.noise_ps_ax.set_title("2D Power Spectrum")
+        self.noise_ps_ax.set_xticks([]); self.noise_ps_ax.set_yticks([])
+        self.noise_fig.tight_layout()
+        self.noise_canvas.draw()
+
+        # ------ Prepare data for MCMC, but do not run it ------
+        # Store these for use by run_walkers()
+        self.pixels = pixels
+        self.hist_vals = np.asarray(hist_vals, dtype=int)
+        self.bin_centers = bin_centers
+        self.log_pixels = np.log10(pixels)
+        self.log_bin_centers = np.log10(bin_centers)
+
+    def show_noise_corner_plot(self):
+        # Check if MCMC samples exist (run_noise_analysis should save them)
+        if not hasattr(self, 'noise_samples') or self.noise_samples is None:
+            messagebox.showinfo("No fit", "Please run Analyze DN Map first.")
+            return
+
+        labels = [
+            r"$w_1$",  # Gaussian 1 weight
+            r"$w_2$",  # Gaussian 2 weight
+            r"$w_3$",  # Gaussian 3 weight
+            r"$c_1$",  # Gaussian 1 center/shift
+            r"$c_2$",  # Gaussian 2 center/shift
+            r"$c_3$",  # Gaussian 3 center/shift
+            r"$\mu$",  # mean (log10(DN))
+            r"$\sigma$",  # standard deviation (log10(DN))
+            r"$A$",   # amplitude
+        ]
+
+        fig = corner.corner(self.noise_samples, labels=labels, show_titles=True,
+                            quantiles=[0.16, 0.5, 0.84], title_fmt=".3f")
+
+        # Show in a popup window using FigureCanvasTkAgg
+        popup = tk.Toplevel(self)
+        popup.title("Noise Model Parameter Posteriors")
+        canvas = FigureCanvasTkAgg(fig, master=popup)
+        canvas.get_tk_widget().pack(fill='both', expand=True)
+        # Add a toolbar if desired
+        toolbar = NavigationToolbar2Tk(canvas, popup)
+        toolbar.update()
+        toolbar.pack(side='bottom', fill='x')
+        canvas.draw()
+        # Optionally auto-close on window exit
+        popup.protocol("WM_DELETE_WINDOW", lambda: (plt.close(fig), popup.destroy()))
 
     def _get_current_analysis_streak(self):
         # Helper to get currently displayed streak (primary or delta)
