@@ -35,7 +35,7 @@ Simulation settings (particle rate, simulation time, etc.)
 
 Outputs:
 
-Tabular files (CSV/HDF5) with event-level energy deposition, position, and particle ID
+Tabular files (CSV/HDF5) with event-level energy deposition, position, and particle ID. This is run for a single species only, as specified by the species index passed in the config.yml file.
 
 2. electron_spread.py
 Purpose:
@@ -121,8 +121,9 @@ HAZARD-simulator/
 Quickstart
 Install dependencies:
 
-</pre>
+<pre>
 pip install -r requirements.txt</pre>
+
 Run a full simulation pipeline:
 
 <pre>
