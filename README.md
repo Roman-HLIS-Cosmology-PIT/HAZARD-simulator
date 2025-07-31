@@ -134,6 +134,8 @@ python electron_spread.py --input gcr_events.h5 --output DN_map.npy
 # 3. Visualize results with GUI
 python GCR_GUI.py</pre>
 
+Note: The GUI requires tkinter. On some Linux systems you may need to run sudo apt-get install python3-tk.
+
 
 Citing or Acknowledging
 If you use this codebase in a publication, please cite the repository and acknowledge the developers. See CITATION.cff or contact the maintainers for recommended citation formats.
