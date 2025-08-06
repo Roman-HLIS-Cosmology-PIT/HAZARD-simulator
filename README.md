@@ -4,108 +4,108 @@ This repository implements a modular simulation pipeline for studying galactic c
 
 Three primary scripts form the backbone of the simulation and analysis workflow:
 
-1. GCRsim_v02f.py
-Purpose:
-Core simulation engine for generating GCR events and their interactions within the detector medium.
-
-Key Features:
-
-Monte Carlo Particle Simulation: Realistic GCR particle generation using customizable input parameters (flux, energy spectrum, incident angle, etc.).
-
-Energy Deposition Modeling: Tracks energy loss and charge creation for each event using stochastic models.
-
-Delta Ray Production: Implements Poisson statistics for simulating secondary electron (“delta ray”) creation.
-
-Data Export: Outputs event data as CSV or HDF5 for further processing.
-
-Typical Usage:
-
-<pre> 
-from GCRsim_v02f import CosmicRaySimulation
-
-# Set up a simulation instance and run
-sim = CosmicRaySimulation(config_file="config.yml")
-sim.run()
-sim.save("output_filename.h5")</pre>
-Inputs:
-
-Detector/material properties (as config file or script arguments)
-
-Simulation settings (particle rate, simulation time, etc.)
-
-Outputs:
-
-Tabular files (CSV/HDF5) with event-level energy deposition, position, and particle ID. This is run for a single species only, as specified by the species index passed in the config.yml file.
-
-2. electron_spread.py
-Purpose:
-Simulates charge diffusion and conversion of deposited energy into electron count and digital number (DN) maps.
-
-Key Features:
-
-Charge Diffusion Modeling: Convolves initial energy depositions with spatially varying Gaussian kernels to mimic realistic electron/hole cloud spreading.
-
-Electron Conversion: Converts energy loss to charge using physical constants (Fano factor, ionization energy, etc.).
-
-Downsampling: Aggregates high-resolution simulation results into low-resolution DN maps matching detector readout.
-
-Batch Processing: Efficiently processes large CSV/HDF5 event datasets in chunks.
-
-Typical Usage:
-
-<pre> 
-from electron_spread import process_electrons_to_DN
-
-process_electrons_to_DN(
-    csvfile="gcr_events.csv",
-    gain_txt="gain_table.txt",
-    det_pixels_lo=4096,
-    kernel_size_hi=50,
-    sigma=0.314,
-    output_DN_path="DN_map.npy"
-)</pre> 
-Inputs:
-
-Event list (CSV/HDF5) from GCRsim_v02f.py
-
-Detector gain/response table
-
-Outputs:
-
-High-res and downsampled DN maps (NumPy arrays or image files)
-
-3. GCR_GUI.py
-Purpose:
-Graphical user interface for interactive exploration and visualization of simulated GCR events and DN maps.
-
-Key Features:
-
-Interactive Heatmap Viewer: Inspect downsampled and high-resolution DN maps with zoom, crosshair, and event selection.
-
-Overlay & Annotation: Visualize event positions, detector boundaries, and gridlines for spatial context.
-
-Event Inspection: Double-click to display detailed event info and high-res charge diffusion patterns.
-
-Export & Save Options: Save current visualizations or simulation state for further analysis.
-
-Typical Usage:
-<pre>
-shell
-python GCR_GUI.py</pre>
-or
-
-<pre>
-import GCR_GUI
-GCR_GUI.run()</pre>
-Inputs:
-
-Output files from GCRsim_v02f.py and electron_spread.py (event lists, DN maps, etc.)
-
-Outputs:
-
-Interactive visualizations
-
-Exported plots or event data (optional)
+    1. GCRsim_v02f.py
+    Purpose:
+    Core simulation engine for generating GCR events and their interactions within the detector medium.
+    
+    Key Features:
+    
+    Monte Carlo Particle Simulation: Realistic GCR particle generation using customizable input parameters (flux, energy spectrum, incident angle, etc.).
+    
+    Energy Deposition Modeling: Tracks energy loss and charge creation for each event using stochastic models.
+    
+    Delta Ray Production: Implements Poisson statistics for simulating secondary electron (“delta ray”) creation.
+    
+    Data Export: Outputs event data as CSV or HDF5 for further processing.
+    
+    Typical Usage:
+    
+    <pre> 
+    from GCRsim_v02f import CosmicRaySimulation
+    
+    # Set up a simulation instance and run
+    sim = CosmicRaySimulation(config_file="config.yml")
+    sim.run()
+    sim.save("output_filename.h5")</pre>
+    Inputs:
+    
+    Detector/material properties (as config file or script arguments)
+    
+    Simulation settings (particle rate, simulation time, etc.)
+    
+    Outputs:
+    
+    Tabular files (CSV/HDF5) with event-level energy deposition, position, and particle ID. This is run for a single species only, as specified by the species index passed in the config.yml file.
+    
+    2. electron_spread.py
+    Purpose:
+    Simulates charge diffusion and conversion of deposited energy into electron count and digital number (DN) maps.
+    
+    Key Features:
+    
+    Charge Diffusion Modeling: Convolves initial energy depositions with spatially varying Gaussian kernels to mimic realistic electron/hole cloud spreading.
+    
+    Electron Conversion: Converts energy loss to charge using physical constants (Fano factor, ionization energy, etc.).
+    
+    Downsampling: Aggregates high-resolution simulation results into low-resolution DN maps matching detector readout.
+    
+    Batch Processing: Efficiently processes large CSV/HDF5 event datasets in chunks.
+    
+    Typical Usage:
+    
+    <pre> 
+    from electron_spread import process_electrons_to_DN
+    
+    process_electrons_to_DN(
+        csvfile="gcr_events.csv",
+        gain_txt="gain_table.txt",
+        det_pixels_lo=4096,
+        kernel_size_hi=50,
+        sigma=0.314,
+        output_DN_path="DN_map.npy"
+    )</pre> 
+    Inputs:
+    
+    Event list (CSV/HDF5) from GCRsim_v02f.py
+    
+    Detector gain/response table
+    
+    Outputs:
+    
+    High-res and downsampled DN maps (NumPy arrays or image files)
+    
+    3. GCR_GUI.py
+    Purpose:
+    Graphical user interface for interactive exploration and visualization of simulated GCR events and DN maps.
+    
+    Key Features:
+    
+    Interactive Heatmap Viewer: Inspect downsampled and high-resolution DN maps with zoom, crosshair, and event selection.
+    
+    Overlay & Annotation: Visualize event positions, detector boundaries, and gridlines for spatial context.
+    
+    Event Inspection: Double-click to display detailed event info and high-res charge diffusion patterns.
+    
+    Export & Save Options: Save current visualizations or simulation state for further analysis.
+    
+    Typical Usage:
+    <pre>
+    shell
+    python GCR_GUI.py</pre>
+    or
+    
+    <pre>
+    import GCR_GUI
+    GCR_GUI.run()</pre>
+    Inputs:
+    
+    Output files from GCRsim_v02f.py and electron_spread.py (event lists, DN maps, etc.)
+    
+    Outputs:
+    
+    Interactive visualizations
+    
+    Exported plots or event data (optional)
 
 Repository Structure
 <pre>
