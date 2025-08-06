@@ -4,7 +4,7 @@ This repository implements a modular simulation pipeline for studying galactic c
 
 Three primary scripts form the backbone of the simulation and analysis workflow:
 
-    1. GCRsim_v02f.py
+1. GCRsim_v02f.py
     Purpose:
     Core simulation engine for generating GCR events and their interactions within the detector medium.
     
@@ -37,7 +37,7 @@ Three primary scripts form the backbone of the simulation and analysis workflow:
     
     Tabular files (CSV/HDF5) with event-level energy deposition, position, and particle ID. This is run for a single species only, as specified by the species index passed in the config.yml file.
     
-    2. electron_spread.py
+2. electron_spread.py
     Purpose:
     Simulates charge diffusion and conversion of deposited energy into electron count and digital number (DN) maps.
     
@@ -74,7 +74,7 @@ Three primary scripts form the backbone of the simulation and analysis workflow:
     
     High-res and downsampled DN maps (NumPy arrays or image files)
     
-    3. GCR_GUI.py
+3. GCR_GUI.py
     Purpose:
     Graphical user interface for interactive exploration and visualization of simulated GCR events and DN maps.
     
