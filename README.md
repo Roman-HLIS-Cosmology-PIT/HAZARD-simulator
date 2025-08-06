@@ -113,14 +113,14 @@ Three primary scripts form the backbone of the simulation and analysis workflow:
 Repository Structure
 <pre>
 HAZARD-simulator/
+├── Sample Outputs/          # Example simulated output data
 ├── GCRsim_v02f.py           # Main GCR simulation engine
 ├── electron_spread.py       # Charge diffusion & DN map processor
 ├── GCR_GUI.py               # Tkinter-based GUI for visualization
 ├── requirements.txt         # List of Python dependencies
 ├── README.md                # (You are here!)
-├── [other scripts/modules]  # (e.g., utility modules, tests)
-├── data/                    # Example input data or output directories
-└── docs/                    # Documentation and user guides</pre>
+└── [other scripts/modules]  # (e.g., utility modules, tests)</pre>
+
 Quickstart
 Install dependencies:
 
