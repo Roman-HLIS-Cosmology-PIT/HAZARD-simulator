@@ -21,7 +21,7 @@ from matplotlib.colors import LogNorm
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle
 from GCRsim_v02f import CosmicRaySimulation
-from electron_spread import process_electrons_to_DN
+from electron_spread import process_electrons_to_DN_by_blob
 from electron_spread import process_pid_electrons_zoom
 
 # Define a list of colors or use a colormap
@@ -36,6 +36,18 @@ def is_delta_of_primary(pid, primary_pid):
     sp_prim = (primary_pid >> (11+14)) & ((1<<7)-1)
     pr_prim = (primary_pid >> 14) & ((1<<11)-1)
     return (sp_pid, pr_pid) == (sp_prim, pr_prim) and delta > 0
+
+def get_bounding_circle(positions):
+    """
+    Given a list of (x, y, z) positions, compute center (x_c, y_c) and radius in μm
+    that bounds all points (for plotting a highlight).
+    """
+    xs, ys = zip(*[(x, y) for x, y, *_ in positions])
+    x_c = np.mean(xs)
+    y_c = np.mean(ys)
+    # Circle large enough to enclose the object (+ some margin)
+    radius = max(np.hypot(np.array(xs)-x_c, np.array(ys)-y_c)) + 10  # 10 μm margin
+    return x_c, y_c, radius
 
 class Application(tk.Tk):
     def __init__(self):
@@ -260,6 +272,26 @@ class Application(tk.Tk):
         nav = NavigationToolbar2Tk(self.heatmap_canvas, self.tab_heatmap)
         nav.update()
         nav.pack(side='bottom', fill='x')
+
+        grazing_ctrl = ttk.Frame(self.tab_heatmap)
+        grazing_ctrl.pack(side='top', fill='x', padx=10, pady=6)
+
+        ttk.Label(grazing_ctrl, text="Grazing threshold angle (deg):").pack(side='left')
+        self.grazing_angle_var = tk.DoubleVar(value=80.0)
+        ttk.Entry(grazing_ctrl, textvariable=self.grazing_angle_var, width=6).pack(side='left', padx=(2, 12))
+
+        ttk.Label(grazing_ctrl, text="Species:").pack(side='left', padx=(2,0))
+        self.grazing_species_var = tk.StringVar()
+        self.grazing_species_dropdown = ttk.Combobox(
+            grazing_ctrl, textvariable=self.grazing_species_var, state='readonly', width=18
+        )
+        self.grazing_species_dropdown.pack(side='left', padx=(2, 12))
+
+        self.grazing_highlight_btn = ttk.Button(
+            grazing_ctrl, text="Highlight Grazing Parents", command=self.highlight_grazing_on_heatmap
+        )
+        self.grazing_highlight_btn.pack(side='left', padx=(2,0))
+
         self.heatmap_canvas.mpl_connect("button_press_event", self._on_heatmap_click)
 
     def _on_heatmap_click(self, event):
@@ -685,8 +717,6 @@ class Application(tk.Tk):
             plot_chain(var.get())
         dropdown.bind("<<ComboboxSelected>>", on_select)
 
-
-
     def _on_dnmap_click(self, event):
         if not hasattr(event, 'dblclick') or not event.dblclick:
             return
@@ -703,7 +733,7 @@ class Application(tk.Tk):
             return
 
         grid_size = self.current_dnmap.shape[0]
-        pixel_size_lo = 10.0  # Or your actual low-res pixel size
+        pixel_size_lo = 10.0  # pixel size in microns
         x_um = x_pix * pixel_size_lo
         y_um = y_pix * pixel_size_lo
 
@@ -724,19 +754,23 @@ class Application(tk.Tk):
 
         def work():
             try:
-                H_zoom = process_pid_electrons_zoom(
+            # New call returns patch, x_coords_um, y_coords_um for full blob coverage
+                H_zoom, x_coords_um, y_coords_um = process_pid_electrons_zoom(
                     csvfile=csvfile,
                     pid=closest_pid,
                     delta_pids=delta_pids,
-                    x_center=x_parent,
-                    y_center=y_parent,
-                    pixel_size_hi=1.0,
-                    sigma=3.14
+                    sigma_micron=3.14,         # make sure this matches your kernel
+                    hi_res_grid_spacing_micron=1.0, # or whatever spacing you want
+                    N_sigma=4                       # or whatever your default is
                 )
-                # When done, pop up the image and close the dialog
-                self.after(0, lambda: [rendering_dialog.destroy(), self._popup_zoom_dn_image(H_zoom, x_parent, y_parent, closest_pid)])
+                # Pass these new axes to your popup display for accurate labeling/overlays
+                self.after(0, lambda: [
+                    rendering_dialog.destroy(),
+                    self._popup_zoom_dn_image(H_zoom, x_coords_um, y_coords_um, closest_pid)
+                ])
+
             except Exception as e:
-                self.after(0, lambda: [rendering_dialog.destroy(), messagebox.showerror("Error", str(e))])
+                self.after(0, lambda e=e: [rendering_dialog.destroy(), messagebox.showerror("Error", str(e))])
 
         # Launch the worker in a thread to keep GUI responsive
         threading.Thread(target=work, daemon=True).start()
@@ -777,43 +811,93 @@ class Application(tk.Tk):
                         delta_pids.append(pid)
         return parent_pid, delta_pids, parent_x, parent_y
 
-    def _popup_zoom_dn_image(self, H_zoom, x_um, y_um, pid):
-        #  Determine region size based on track length 
-        min_region_um = 60.0  # Minimum region size (microns)
-        margin_um = 15.0       # Add a small margin beyond the track ends
 
-        # Try to get positions for this PID
-        positions = None
-        if hasattr(self, '_find_streak_by_pid'):
-            streak = self._find_streak_by_pid(pid)
-            if streak is not None:
-                positions = streak[0]
+    def find_grazing_parent_pids(self, theta_thresh_deg=80.0):
+        """
+        Finds all primary (parent) PIDs with initial theta > theta_thresh_deg (degrees).
+        Returns a list of (pid, streak) tuples, where streak is the full streak info for that PID.
+        """
+        grazing_parents = []
+        delta_mask = (1 << 14) - 1
 
-        if positions and len(positions) > 1:
-            xs, ys, zs = zip(*positions)
-            x_min, x_max = min(xs), max(xs)
-            y_min, y_max = min(ys), max(ys)
-            track_length = max(x_max - x_min, y_max - y_min)
-            region_size_um = max(min_region_um, track_length + 2 * margin_um)
-            x_center = (x_min + x_max) / 2
-            y_center = (y_min + y_max) / 2
-        else:
-            region_size_um = min_region_um
-            x_center, y_center = x_um, y_um
+        for species in (self.current_streaks or []):
+            for bin in species:
+                for streak in bin:
+                    positions, pid, num_steps, theta_i, phi_i, *_ = streak
+                    if (pid & delta_mask) != 0:
+                        continue  # skip delta rays, only want parents
+                    theta_deg = np.degrees(theta_i)
+                    if theta_deg > theta_thresh_deg:
+                        grazing_parents.append((pid, streak))
+        return grazing_parents
 
-        pixel_size_hi = 1.0
-        N = H_zoom.shape[0]
-        extent = [x_center - (N/2)*pixel_size_hi, x_center + (N/2)*pixel_size_hi,
-            y_center - (N/2)*pixel_size_hi, y_center + (N/2)*pixel_size_hi
+    def highlight_grazing_on_heatmap(self):
+        angle = self.grazing_angle_var.get()
+        species = self.grazing_species_var.get()
+
+        # Filter by angle and species
+        grazing_list = []
+        delta_mask = (1 << 14) - 1
+
+        for species_idx, species_group in enumerate(self.current_streaks or []):
+            species_name = self.sim.species_names.get(species_idx, f"Species {species_idx}")
+            if species != "All Species" and species != species_name:
+                continue
+            for bin in species_group:
+                for streak in bin:
+                    positions, pid, num_steps, theta_i, phi_i, *_ = streak
+                    if (pid & delta_mask) != 0:
+                        continue  # Only want primaries
+                    theta_deg = np.degrees(theta_i)
+                    if theta_deg > angle:
+                        grazing_list.append((pid, streak))
+        if not grazing_list:
+            messagebox.showinfo("No Grazing Tracks", "No grazing-incidence parent tracks found.")
+            return
+
+        # Redraw the heatmap and overlays
+        self._update_heatmap(self.current_heatmap)
+        for pid, streak in grazing_list:
+            positions = streak[0]
+            x_c, y_c, radius = get_bounding_circle(positions)
+            circle = Circle(
+                (x_c, y_c), radius,
+                edgecolor='cyan', facecolor='none', linewidth=2.2, zorder=100
+            )
+            self.heatmap_ax.add_patch(circle)
+        self.heatmap_canvas.draw()
+
+    def _populate_grazing_species_dropdown(self):
+        if not self.sim or not self.current_streaks:
+            self.grazing_species_dropdown['values'] = ["All Species"]
+            self.grazing_species_var.set("All Species")
+            return
+
+        # Use species names from simulation
+        available_species_indices = [
+            i for i, streak in enumerate(self.current_streaks)
+            if streak and len(streak) > 0
         ]
-        # Optionally crop or pad H_zoom if needed
-        if H_zoom.shape != (N, N):
-            print(f"Reshaping H_zoom from {H_zoom.shape} to ({N},{N})")
-            H_pad = np.zeros((N, N), dtype=H_zoom.dtype)
-            ny, nx = H_zoom.shape
-            sy, sx = min(ny, N), min(nx, N)
-            H_pad[:sy, :sx] = H_zoom[:sy, :sx]
-            H_zoom = H_pad
+        species_list = ["All Species"] + [self.sim.species_names[k] for k in available_species_indices]
+        self.grazing_species_dropdown['values'] = species_list
+        # Default to "All Species"
+        if self.grazing_species_var.get() not in species_list:
+            self.grazing_species_var.set("All Species")
+
+
+
+    def _popup_zoom_dn_image(self, H_zoom, x_coords_um, y_coords_um, pid):
+        """
+        Popup a high-res image of the charge diffusion patch for a given PID,
+        using physical axes to ensure the entire event blob is shown.
+        """
+        # --- Calculate extent from physical axes ---
+        pixel_size_hi_x = x_coords_um[1] - x_coords_um[0] if len(x_coords_um) > 1 else 1.0
+        pixel_size_hi_y = y_coords_um[1] - y_coords_um[0] if len(y_coords_um) > 1 else 1.0
+        extent = [
+            x_coords_um[0] - 0.5 * pixel_size_hi_x, x_coords_um[-1] + 0.5 * pixel_size_hi_x,
+            y_coords_um[0] - 0.5 * pixel_size_hi_y, y_coords_um[-1] + 0.5 * pixel_size_hi_y
+        ]
 
         # --- Popup window ---
         popup = tk.Toplevel(self)
@@ -827,6 +911,10 @@ class Application(tk.Tk):
         ax.set_ylabel("y (μm)")
         cbar = fig.colorbar(im, ax=ax, label="Electrons")
 
+        # Optionally overlay event positions as red dots if you have them
+        # if event_xs and event_ys:
+        #     ax.plot(event_xs, event_ys, 'r.', ms=2.2, alpha=0.75, label="Deposition centers")
+
         canvas = FigureCanvasTkAgg(fig, master=popup)
         canvas.get_tk_widget().pack(side='top', fill='both', expand=True)
 
@@ -834,6 +922,7 @@ class Application(tk.Tk):
         toolbar.update()
         toolbar.pack(side='top', fill='x')
 
+        # --- 10μm pixel grid overlay ---
         grid_var = tk.BooleanVar(value=False)
         def toggle_grid():
             [l.remove() for l in ax.lines[:]]
@@ -853,18 +942,16 @@ class Application(tk.Tk):
         grid_checkbox.pack(side='top', pady=8)
         toggle_grid()
 
-    # [After grid_checkbox code]
-
+        # --- Charge extent boundary overlay ---
         def find_boundary_coords(arr):
             arr = (arr > 0).astype(np.uint8)
-            padded = pad(arr, 1)
+            padded = np.pad(arr, 1)
             boundary = (
-                (padded[1:-1, 1:-1] > 0) &
-                (
-                    (padded[ :-2, 1:-1] == 0) |
-                    (padded[2:  , 1:-1] == 0) |
-                    (padded[1:-1,  :-2] == 0) |
-                    (padded[1:-1, 2:  ] == 0)
+                (padded[1:-1, 1:-1] > 0) & (
+                    (padded[:-2, 1:-1] == 0) |
+                    (padded[2:, 1:-1] == 0) |
+                    (padded[1:-1, :-2] == 0) |
+                    (padded[1:-1, 2:] == 0)
                 )
             )
             y_idx, x_idx = np.where(boundary)
@@ -888,9 +975,19 @@ class Application(tk.Tk):
                 y_phys = y_vals[yb]
                 boundary_plot[0] = ax.plot(x_phys, y_phys, 'r.', markersize=1.7, zorder=30, label="Charge extent")[0]
             canvas.draw_idle()
+
         boundary_checkbox = tk.Checkbutton(
             popup, text="Show charge extent outline", variable=boundary_var, command=toggle_boundary)
         boundary_checkbox.pack(side='top', pady=2)
+
+        # --- Handle closing ---
+        def on_close():
+            plt.close(fig)
+            popup.destroy()
+        popup.protocol("WM_DELETE_WINDOW", on_close)
+
+        # --- Draw once at the end for initial display ---
+        canvas.draw_idle()
 
         def on_close():
             plt.close(fig)
@@ -1253,7 +1350,7 @@ class Application(tk.Tk):
         def do_conversion():
             try:
                 # Optionally, show a progress dialog, or disable UI
-                H_detector_DN = process_electrons_to_DN(
+                H_detector_DN = process_electrons_to_DN_by_blob(
                     csvfile=csvfile,
                     gain_txt=gain_txt,
                     output_DN_path=dn_output
@@ -1751,6 +1848,8 @@ class Application(tk.Tk):
         self.heatmap_ax.set_ylabel("y (μm)")
         self._heat_cb.set_label("Number of propagation events")    
         self.heatmap_canvas.draw()
+        self._populate_grazing_species_dropdown()
+
 
     def _export_positions_table(self):
         streak = self._get_current_analysis_streak()
@@ -2090,8 +2189,6 @@ class Application(tk.Tk):
         self.hist_ax.legend(fontsize='x-small')
         self.hist_ax.grid(True, which="both", ls="--", alpha=0.7)
 
-
-
     def plot_delta_ray_energy_histogram(self):
         streaks = self.current_streaks
         if not streaks:
@@ -2172,11 +2269,6 @@ class Application(tk.Tk):
         # You can add a spinning GIF here if you want to get fancy!
         top.update()
         return top
-
-
-
-
-
 
     def export_histogram(self):
         fpath = filedialog.asksaveasfilename(defaultextension=".png",
