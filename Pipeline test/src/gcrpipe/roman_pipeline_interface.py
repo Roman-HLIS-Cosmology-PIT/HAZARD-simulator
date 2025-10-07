@@ -1,7 +1,7 @@
 #gcrsim lvl1 pipeline interface test
 import numpy as np
-from GCRsim_v02h import CosmicRaySimulation
-from electron_spread2 import process_electrons_to_DN_by_blob
+from .GCRsim_v02h import CosmicRaySimulation
+from .electron_spread2 import process_electrons_to_DN_by_blob
 from datetime import datetime
 
 def generate_singleframe_cr(rng, nat_pix:int = 4088, date:float = 2026.790, dt:float = 3.04,
@@ -32,9 +32,8 @@ def generate_singleframe_cr(rng, nat_pix:int = 4088, date:float = 2026.790, dt:f
     
     return out_array
 
-
-
-
-rng = np.random.default_rng()
-
-out_array_img = generate_singleframe_cr(rng)
+def main():
+    rng = np.random.default_rng()
+    out_array_img = generate_singleframe_cr(rng)
+    print(f"Simulation complete. Array shape: {out_array_img.shape}")
+    return 0

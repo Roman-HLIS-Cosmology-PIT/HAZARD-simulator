@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 from itertools import chain
 from tqdm import tqdm
+from importlib.resources import files
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -200,7 +201,8 @@ X0_cm=X0_gPercmSqd/HgCdTe_density
 Z_mean, A_mean = mean_Z_A_HgCdTe(x)
 
 color_list = []
-with open('rgb_color_list.txt', 'r') as file:
+path = files("gcrpipe").joinpath("data/rgb_color_list.txt")
+with open(path, 'r') as file:
     for line in file:
         line = line.strip()  # Remove leading/trailing whitespace
         if not line or line.startswith('#'):
@@ -215,8 +217,8 @@ with open('rgb_color_list.txt', 'r') as file:
 
 # Reading in sunspot data to compute ISO parameters and rigidity spectrum
 # Sunspot data downloaded from https://www.sidc.be/SILSO/datafiles
-month_df = pd.read_csv('SN_m_tot_V2.0.csv', sep='\;', engine = 'python')
-month_s_df = pd.read_csv('SN_ms_tot_V2.0.csv', sep='\;', engine = 'python')
+csv_path = files("gcrpipe").joinpath("data/SN_m_tot_V2.0.csv")
+month_df = pd.read_csv(csv_path, sep=";", engine="python")
 
 #Contents:
   #Column 1-2: Gregorian calendar date, 1.Year, 2.Month
@@ -228,7 +230,6 @@ month_s_df = pd.read_csv('SN_ms_tot_V2.0.csv', sep='\;', engine = 'python')
   #Column 7: Definitive/provisional marker.
 
 month_df.columns = ['year', 'month', 'date' ,'mean', 'std_dev','num_obs','marker']
-month_s_df.columns = ['year', 'month', 'date' ,'mean', 'std_dev','num_obs','marker']
 
 frac_amounts = [0.042, 0.123, 0.204, 0.288, 0.371, 0.455, 0.538, 0.623, 0.707, 0.790, 0.874, 0.958]
 t_plus = 1 + (frac_amounts[2] + frac_amounts[3])*(1/2)

@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gcrpipe"
+version = "0.1.0"
+description = "Minimal Roman GCR simulation + pixelization pipeline"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Anthony Harbo Torres" },
+  { name = "Christopher Hirata" },
+  { name = "Zac Brutko"},
+  { name = "Emily Koivu" }]
+license = { text = "MIT" }
+
+dependencies = [
+  "numpy",
+  "scipy",
+  "pandas"
+]
+
+[project.scripts]
+gcrpipe-run = "gcrpipe.roman_pipeline_interface:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+gcrpipe = ["data/*"]
+
