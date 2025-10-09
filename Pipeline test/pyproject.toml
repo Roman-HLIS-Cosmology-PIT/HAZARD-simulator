@@ -1,34 +1,70 @@
-[build-system]
-requires = ["setuptools>=69", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
-name = "gcrpipe"
-version = "0.1.0"
-description = "Minimal Roman GCR simulation + pixelization pipeline"
+name = "gcrsim"
+description = "Dynamic Roman GCR simulation and pixelization pipeline"
 readme = "README.md"
-requires-python = ">=3.9"
-authors = [{ name = "Anthony Harbo Torres" },
-  { name = "Christopher Hirata" },
-  { name = "Zac Brutko"},
-  { name = "Emily Koivu" }]
-license = { text = "MIT" }
+license = "MIT" 
+license-files = ["LICENSE"]
 
-dependencies = [
-  "numpy",
-  "scipy",
-  "pandas"
+authors = [
+    { name = "Anthony Harbo Torres, et. al.", email = "harbotorres.1@osu.edu" }
 ]
 
-[project.scripts]
-gcrpipe-run = "gcrpipe.roman_pipeline_interface:main"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+]
 
-[tool.setuptools]
-package-dir = {"" = "src"}
+requires-python = ">=3.9"
+dependencies = []
 
-[tool.setuptools.packages.find]
-where = ["src"]
+# Dynamic versioning handled by setuptools_scm
+dynamic = ["version"]
 
-[tool.setuptools.package-data]
-gcrpipe = ["data/*"]
+[project.urls]
+"Source Code" = "https://github.com/HAZARD-simulator/gcrsim"
 
+[project.optional-dependencies]
+dev = [
+    "asv==0.6.4",
+    "virtualenv==20.30",
+    "jupyter",
+    "pre-commit",
+    "pytest",
+    "pytest-cov",
+    "ruff",
+]
+
+[build-system]
+requires = [
+    "setuptools>=62",
+    "setuptools_scm>=6.2",
+    "wheel"
+]
+build-backend = "setuptools.build_meta"
+
+# setuptools_scm will write a version string to this file automatically
+[tool.setuptools_scm]
+write_to = "src/gcrsim/_version.py"
+version_scheme = "guess-next-dev"
+local_scheme = "node-and-date"
+fallback_version = "0.0.0"
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "src", "docs"]
+addopts = "--doctest-modules --doctest-glob=*.rst"
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "N", "UP", "B", "SIM", "I", "D101", "D102", "D103", "D106", "D206", "D207", "D208", "D300", "D417", "D419", "NPY201"]
+ignore = ["UP006", "UP007", "SIM114", "B028", "SIM117", "UP015", "UP028"]
+
+[tool.coverage.run]
+omit = ["src/gcrsim/_version.py"]

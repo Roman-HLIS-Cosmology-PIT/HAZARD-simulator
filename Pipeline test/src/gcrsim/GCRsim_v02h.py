@@ -201,7 +201,7 @@ X0_cm=X0_gPercmSqd/HgCdTe_density
 Z_mean, A_mean = mean_Z_A_HgCdTe(x)
 
 color_list = []
-path = files("gcrpipe").joinpath("data/rgb_color_list.txt")
+path = files("gcrsim").joinpath("data/rgb_color_list.txt")
 with open(path, 'r') as file:
     for line in file:
         line = line.strip()  # Remove leading/trailing whitespace
@@ -217,7 +217,7 @@ with open(path, 'r') as file:
 
 # Reading in sunspot data to compute ISO parameters and rigidity spectrum
 # Sunspot data downloaded from https://www.sidc.be/SILSO/datafiles
-csv_path = files("gcrpipe").joinpath("data/SN_m_tot_V2.0.csv")
+csv_path = files("gcrsim").joinpath("data/SN_m_tot_V2.0.csv")
 month_df = pd.read_csv(csv_path, sep=";", engine="python")
 
 #Contents:
