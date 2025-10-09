@@ -258,9 +258,7 @@ def _downsample_and_add_patch(H_detector, patch, hi_x0, hi_y0, r):
     height = min(patch_ds.shape[0] - src_y0, Hh - dst_y0)
     if width <= 0 or height <= 0:
         return
-
     H_detector[dst_y0:dst_y0+height, dst_x0:dst_x0+width] += patch_ds[src_y0:src_y0+height, src_x0:src_x0+width]
-
 
 def process_electrons_to_DN_by_blob(
     csvfile,
@@ -281,9 +279,6 @@ def process_electrons_to_DN_by_blob(
       * Immediately downsample that patch to detector pixels
       * Accumulate into a single n_pixels×n_pixels image (no global hi-res array)
     """
-    import numpy as np
-    import pandas as pd
-    from tqdm import tqdm
 
     # downsample factor (must be integer)
     r = int(round(pixel_size_micron / hi_res_grid_spacing_micron))

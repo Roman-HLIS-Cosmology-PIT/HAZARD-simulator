@@ -3,8 +3,8 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "gcrpipe"
-version = "0.1.0"
+name = "gcrsim"
+version = "0.2.0"
 description = "Minimal Roman GCR simulation + pixelization pipeline"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.scripts]
-gcrpipe-run = "gcrpipe.roman_pipeline_interface:main"
+gcrsim-run = "gcrsim.roman_pipeline_interface:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -30,5 +30,5 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-gcrpipe = ["data/*"]
+gcrsim = ["data/*"]
 

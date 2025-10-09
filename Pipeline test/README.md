@@ -1,1 +1,1 @@
-# gcrpipe\nA minimal Roman GCR simulation pipeline.
+# gcrsim\nA minimal Roman GCR simulation pipeline.
