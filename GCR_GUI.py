@@ -20,9 +20,9 @@ from matplotlib.figure import Figure
 from matplotlib.colors import LogNorm
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle
-from GCRsim_v02f import CosmicRaySimulation
-from electron_spread import process_electrons_to_DN_by_blob
-from electron_spread import process_pid_electrons_zoom
+from GCRsim_v02h import CosmicRaySimulation
+from electron_spread2 import process_electrons_to_DN_by_blob
+from electron_spread2 import process_pid_electrons_zoom
 
 # Define a list of colors or use a colormap
 FIT_COLORS = ['r', 'g', 'b', 'm', 'c', 'y', 'k']  # you can expand this
@@ -167,7 +167,7 @@ class Application(tk.Tk):
 
         labels = ["Grid Size:", "Exposure Time (dt):", "Date (fractional year):", "Max Workers:"]
         vars_ = [(tk.IntVar, 4088, 'grid_size_var'),
-                 (tk.DoubleVar, 3.4, 'dt_var'),
+                 (tk.DoubleVar, 3.04, 'dt_var'),
                  (tk.DoubleVar, 2026.123, 'date_var'),
                  (tk.IntVar, 4, 'max_workers_var')]
         for i, (label, (vtype, default, name)) in enumerate(zip(labels, vars_)):
@@ -471,7 +471,7 @@ class Application(tk.Tk):
         self.nonzero_result_value.pack(side='left', padx=2)
 
         # Show expected Kruk value
-        N_expected = int(np.floor((7.7e-4 * 4088**2)*(3.4/140)))
+        N_expected = int(np.floor((7.7e-4 * 4088**2)*(3.04/140)))
         self.kruk_label = ttk.Label(btn_frame, text=f"Expected: {N_expected} (Kruk et al. 2016)")
         self.kruk_label.pack(side='left', padx=12)
 
@@ -840,7 +840,7 @@ class Application(tk.Tk):
         delta_mask = (1 << 14) - 1
 
         for species_idx, species_group in enumerate(self.current_streaks or []):
-            species_name = self.sim.species_names.get(species_idx, f"Species {species_idx}")
+            species_name = self.sim.species_names_dict.get(species_idx, f"Species {species_idx}")
             if species != "All Species" and species != species_name:
                 continue
             for bin in species_group:
@@ -878,7 +878,7 @@ class Application(tk.Tk):
             i for i, streak in enumerate(self.current_streaks)
             if streak and len(streak) > 0
         ]
-        species_list = ["All Species"] + [self.sim.species_names[k] for k in available_species_indices]
+        species_list = ["All Species"] + [self.sim.species_names_dict[k] for k in available_species_indices]
         self.grazing_species_dropdown['values'] = species_list
         # Default to "All Species"
         if self.grazing_species_var.get() not in species_list:
@@ -910,6 +910,61 @@ class Application(tk.Tk):
         ax.set_xlabel("x (μm)")
         ax.set_ylabel("y (μm)")
         cbar = fig.colorbar(im, ax=ax, label="Electrons")
+
+        # Keep a copy of the original data for switching scales
+        original_data = H_zoom.copy()
+
+        # --- Log-scale toggle (s = c * log(1 + r)) + "c" control ---
+        logscale_var = tk.BooleanVar(value=False)
+        c_var = tk.DoubleVar(value=1.0)
+
+        # small control row
+        scale_row = ttk.Frame(popup)
+        scale_row.pack(side='top', fill='x', padx=8, pady=(6, 2))
+
+        ttk.Checkbutton(
+            scale_row,
+            text="Use s = c · log(1 + r) scale",
+            variable=logscale_var,
+            command=lambda: apply_scale()
+        ).pack(side='left')
+
+        ttk.Label(scale_row, text="c:").pack(side='left', padx=(12, 2))
+        c_entry = ttk.Entry(scale_row, textvariable=c_var, width=6)
+        c_entry.pack(side='left')
+
+        def apply_scale():
+            """
+            Update the image and colorbar to reflect either linear scale
+            or the custom s = c*log(1+r) transform for display.
+            """
+            if logscale_var.get():
+                c = float(c_var.get()) if np.isfinite(c_var.get()) else 1.0
+                transformed = c * np.log1p(original_data)  # s = c*log(1+r)
+                im.set_data(transformed)
+                # Reset the clim to the transformed range
+                vmin = np.nanmin(transformed)
+                vmax = np.nanmax(transformed)
+                if vmin == vmax:  # avoid degenerate clim
+                    vmax = vmin + 1e-9
+                im.set_clim(vmin=vmin, vmax=vmax)
+                cbar.set_label(f"Electrons (s = c·log(1+r), c={c:g})")
+            else:
+                im.set_data(original_data)
+                vmin = np.nanmin(original_data)
+                vmax = np.nanmax(original_data)
+                if vmin == vmax:
+                    vmax = vmin + 1e-9
+                im.set_clim(vmin=vmin, vmax=vmax)
+                cbar.set_label("Electrons")
+            canvas.draw_idle()
+
+        # apply on <Return> in the c field and also add a button
+        def _apply_c_event(_=None):
+            apply_scale()
+
+        c_entry.bind("<Return>", _apply_c_event)
+        ttk.Button(scale_row, text="Apply", command=apply_scale).pack(side='left', padx=(6, 0))
 
         # Optionally overlay event positions as red dots if you have them
         # if event_xs and event_ys:
@@ -1353,7 +1408,7 @@ class Application(tk.Tk):
                 H_detector_DN = process_electrons_to_DN_by_blob(
                     csvfile=csvfile,
                     gain_txt=gain_txt,
-                    output_DN_path=dn_output
+                    output_array_path=dn_output
                 )
                 self.after(0, lambda: messagebox.showinfo("Success", f"DN Map saved to:\n{dn_output}"))
             except Exception as e:
@@ -1483,7 +1538,7 @@ class Application(tk.Tk):
             # Try to get species name from the current sim
             try:
                 idx = self.sim.species_index if hasattr(self.sim, 'species_index') else 0
-                sp_name = self.sim.species_names.get(idx, f"Z={self.sim.Z_particle}")
+                sp_name = self.sim.species_names_dict.get(idx, f"Z={self.sim.Z_particle}")
             except Exception:
                 sp_name = "Unknown"
             gcr_counts = [(sp_name, gcr_counts)]
@@ -1835,7 +1890,7 @@ class Application(tk.Tk):
                     col = self.sim.get_particle_color(pid)
                     self.heatmap_ax.plot(xs, ys, '-', color=col, alpha=0.7)
                     idx = (pid >> (11+14)) & ((1<<7)-1)
-                    lbl = self.sim.species_names.get(idx, f'Z={idx}')
+                    lbl = self.sim.species_names_dict.get(idx, f'Z={idx}')
                     if lbl not in legend_handles:
                         legend_handles[lbl] = Line2D([], [], color=col, label=lbl)
         if legend_handles:
@@ -2012,7 +2067,7 @@ class Application(tk.Tk):
             i for i, streak in enumerate(self.current_streaks)
             if streak and len(streak) > 0
         ]
-        species_list = [self.sim.species_names[k] for k in available_species_indices]
+        species_list = [self.sim.species_names_dict[k] for k in available_species_indices]
         self.hist_species_combobox['values'] = species_list
         cur = self.hist_species_var.get()
         if not cur or cur not in species_list:
@@ -2124,7 +2179,7 @@ class Application(tk.Tk):
         for idx, dEs in enumerate(species_dEs):
             if not dEs:
                 continue
-            label = self.sim.species_names.get(idx, f"Species {idx}")
+            label = self.sim.species_names_dict.get(idx, f"Species {idx}")
             color = colors[idx]
             self.hist_ax.hist(
                 dEs, bins=bins, histtype='step', color=color, label=label, linewidth=1.7, alpha=0.98
@@ -2288,7 +2343,7 @@ class Application(tk.Tk):
         params.pack(side='top', fill='x', padx=10, pady=10)
 
         self._ensure_sim()
-        species_names = [self.sim.species_names[k] for k in sorted(self.sim.species_names.keys())]
+        species_names = [self.sim.species_names_dict[k] for k in sorted(self.sim.species_names_dict.keys())]
         ttk.Label(params, text="Species:").grid(row=0, column=0, sticky='e')
         self.adv_species_var = tk.StringVar()
         self.adv_species_combobox = ttk.Combobox(params, textvariable=self.adv_species_var, state='readonly')
@@ -2304,7 +2359,7 @@ class Application(tk.Tk):
 
         # dt
         ttk.Label(params, text="Exposure Time (dt):").grid(row=2, column=0, sticky='e')
-        self.adv_dt_var = tk.DoubleVar(value=3.4)
+        self.adv_dt_var = tk.DoubleVar(value=3.04)
         ttk.Entry(params, textvariable=self.adv_dt_var, width=10).grid(row=2, column=1, padx=4, pady=2)
 
         # date
@@ -2376,7 +2431,7 @@ class Application(tk.Tk):
 
     def _get_selected_advanced_species_index(self):
         species_name = self.adv_species_var.get()
-        for k, v in self.sim.species_names.items():
+        for k, v in self.sim.species_names_dict.items():
             if v == species_name:
                 return k
         return None
