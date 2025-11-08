@@ -2261,7 +2261,7 @@ class Application(tk.Tk):
         bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
 
         me = 0.511  # MeV
-        beta2 = CosmicRaySimulation.beta(bin_centers, me)**2
+        beta2 = CosmicRaySimulation.relative_velocity(bin_centers, me)**2
         beta2 = np.clip(beta2, 1e-8, 1.0)
         K = 0.307075   # MeV*cm^2/g 
         Z = 58.88         # our weighted material average Z
