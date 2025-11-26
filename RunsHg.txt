@@ -1,0 +1,9 @@
+#!/bin/bash
+#SBATCH --job-name=Hg
+#SBATCH --account=PCON0003
+#SBATCH --time=48:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=20
+#SBATCH --mem=48gb
+
+perl HgPerl.pl > InfoHg.txt

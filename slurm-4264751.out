@@ -1,0 +1,12 @@
+/users/PCON0003/koivuemily/GCR/HAZARD-simulator/EmilyWork/EnergyandWaves.py:77: RuntimeWarning: invalid value encountered in sqrt
+  self.nu = np.sqrt(self.k**2 - (self.alpha*self.Z)**2)
+Traceback (most recent call last):
+  File "/usr/lib64/python3.9/runpy.py", line 197, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/usr/lib64/python3.9/runpy.py", line 87, in _run_code
+    exec(code, run_globals)
+  File "/users/PCON0003/koivuemily/GCR/HAZARD-simulator/EmilyWork/WFGenerator.py", line 39, in <module>
+    r,f,g = EnergyandWaves.wavefunc_renorm(Z,n,k,True,info1['h'],Nr)
+  File "/users/PCON0003/koivuemily/GCR/HAZARD-simulator/EmilyWork/EnergyandWaves.py", line 212, in wavefunc_renorm
+    rmatch_index = int(np.floor(crossings[0,0])+1)
+IndexError: index 0 is out of bounds for axis 1 with size 0
