@@ -1,4 +1,5 @@
-import numpy as np
+import numpy as np   
+import sys
 
 def SetupTF(log10rmin, log10rmax, N):
 
@@ -30,6 +31,7 @@ def Potential(Z,r):
     return 1.4399645432764397e-09*Z/r*np.interp(r/4.685024802601039e-11*Z**(1/3), TFGrid_r, TFGrid_phi)
 
 if __name__ == "__main__":
-
+    Z = int(sys.argv[1])
+    #print(Z)
     for r in np.logspace(-13,-7,121).tolist():
-        print('{:13.7E} {:13.7E}'.format(r, Potential(80,r)))
+        print('{:13.7E} {:13.7E}'.format(r, Potential(Z,r)))

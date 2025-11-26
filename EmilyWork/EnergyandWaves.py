@@ -1,17 +1,9 @@
 import numpy as np 
-import matplotlib.pyplot as plt
-import ThomasFermi
+#import matplotlib.pyplot as plt
+from .ThomasFermi import Potential
 import sys
+import asdf
 
-
-Z = int(sys.argv[1])
-n= int(sys.argv[2])
-k= int(sys.argv[3])
-path_out = sys.argv[4]
-Nr = int(sys.argv[5])
-find_h = sys.argv[6]
-find_wfs = sys.argv[7]
-h_try = float(sys.argv[8])
 
 
 r_bohr_H = 5.2946541e-11 # bohr radius in meters
@@ -19,19 +11,11 @@ r_bohr_Mg = r_bohr_H/80
 r_min = r_bohr_Mg/3
 
 a_from_paper = 6.468e-10 
-r_max = a_from_paper 
+r_max = 2.00e-10 #a_from_paper 
 overflow_fix_constant = 2.**60
 
 tol=1e-10
 
-hmin = .5 * 1.60218e-19 #band gap energy eV to J
-hmax = 10e6* 1.60218e-19 #takes me up to a MeV for now to J 
-h = np.sqrt(hmin*hmax)
-s = (hmax/hmin)**.25
-#print(h,s)
-tested_hs = [h]
-tested_s = [s]
-n_zeros = [0]
 
 
 class ElectronWaveFunctionGRC:
@@ -92,9 +76,12 @@ class ElectronWaveFunctionGRC:
         
         self.nu = np.sqrt(self.k**2 - (self.alpha*self.Z)**2) 
         #print(self.nu,(self.alpha*self.Z)**2)
+        
+    
 
     def potential(self, r):
-        return ThomasFermi.Potential(self.Z,r)
+        #return ThomasFermi.Potential(self.Z,r)
+        return Potential(self.Z,r)
     
     def diff_eq(self, r, F, G):
         
@@ -169,10 +156,14 @@ class ElectronWaveFunctionGRC:
         return np.array(r_points), np.array(F_points), np.array(G_points), K_counts
 
         
-def iterate_for_zeros(h,s,n,k,Z,hsarray,sarray,nzeros): 
+def iterate_for_zeros(n,k,Z,Nr,hsarray,sarray,nzeros,hmin=8.0109e-20, hmax =1.60218e-12): 
 
     # number of iterations is limited by how big s can be
     # and the number of bits stored in float64
+    #hmin band gap energy eV to J
+    #hmax takes me up to a MeV for now to J 
+    h = np.sqrt(hmin*hmax)
+    s = (hmax/hmin)**.25
     
     for _ in range(53+max(int(np.ceil(np.log2(s))),0)):
         testing = ElectronWaveFunctionGRC(n, k, h, tol,Z)
@@ -193,33 +184,11 @@ def iterate_for_zeros(h,s,n,k,Z,hsarray,sarray,nzeros):
         s = np.sqrt(s)
         sarray.append(s)
     return {'rs':temp_data_rs,'Fs_int_out': temp_data_Fs,'Gs_int_out': temp_data_Gs,'K_count': K_count,'h':h }
-
-
-
-
-
-
-
-
-
-#### will be used to compute the energies
-
-if find_h =="True":
-    data = iterate_for_zeros(h,s,n,k,Z,tested_hs,tested_s,n_zeros)
-
-    with open(path_out, "a") as f:
-        f.write(str(n) +'\t'+str(k) + '\t' +str(data['h']) + '\t' + str(data['h']/1.60218e-19) +'\n')
-
     
-    
-    
-    
-    
-
-
+     
 
 #reformat this to take in the eigenvalue h and not have to iterate over finding h. 
-def wavefunc_renorm(Z,n,k,bound,h_found):
+def wavefunc_renorm(Z,n,k,bound,h_found,Nr):
     testing = ElectronWaveFunctionGRC(n, k, h_found, tol,Z)
     data_rs, data_Fs, data_Gs,Kcount = testing.RK_4(r_min,r_max, Nr)
     data_Fs = np.array(data_Fs)
@@ -272,12 +241,39 @@ def wavefunc_renorm(Z,n,k,bound,h_found):
     coeff = (np.sum(np.abs(final_fs[1:-1]))**2 + np.sum(np.abs(final_gs[1:-1])**2) + .5*(np.abs(final_fs[0])**2+np.abs(final_fs[-1])**2+ np.abs(final_gs[0])**2+np.abs(final_gs[-1]**2 )))*(data_rs[1] - data_rs[0]) 
 
         #temp_data_rs, Fs_int_in, Gs_int_in,coeff,K_count_in =  instance2.RK_4(r_max,r_min, Nr)
-    return data_rs,final_fs, final_gs,coeff
+    return data_rs,final_fs, final_gs
     
-if find_wfs== "True": 
+if __name__ == "__main__":
+    Z = int(sys.argv[1])
+    n= int(sys.argv[2])
+    k= int(sys.argv[3])
+    path_out = sys.argv[4]
+    Nr = int(sys.argv[5])
+    find_h = sys.argv[6]
+    find_wfs = sys.argv[7]
+    h_try = float(sys.argv[8])
+
+    tested_hs = []
+    tested_s = []
+    n_zeros = []
     
-    data_rs,final_fs, final_gs,coeff = wavefunc_renorm(Z,n,k,True,h_try)
+    
+    #### will be used to compute the energies
+
+    if find_h =="True":
+        data = iterate_for_zeros(n,k,Z,Nr,tested_hs,tested_s,n_zeros)
         
-    np.save("Rs_"+str(Z)+"_"+str(n)+"_"+str(k)+".npy",data_rs)
-    np.save("Fs_"+str(Z)+"_"+str(n)+"_"+str(k)+".npy",final_fs/np.sqrt(coeff))
-    np.save("Gs_"+str(Z)+"_"+str(n)+"_"+str(k)+".npy",final_gs/np.sqrt(coeff))
+        with open(path_out, "a") as f:
+            f.write(str(n) +'\t'+str(k) + '\t' +str(data['h']) + '\t' + str(data['h']/1.60218e-19) +'\n')
+            
+    if find_wfs== "True": 
+    
+        r,f,g = wavefunc_renorm(Z,n,k,True,h_try,Nr)
+        wf_info = {'k':k,'r':r, 'f': f, 'g':g}
+
+        af = asdf.AsdfFile(wf_info)
+
+        # Write the data to a new file
+        af.write_to(str(Z)+'_'+str(k)+"WFs.asdf")
+
+
