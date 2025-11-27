@@ -4,7 +4,7 @@ This repository implements a modular simulation pipeline for studying galactic c
 
 Three primary scripts form the backbone of the simulation and analysis workflow:
 
-1. GCRsim_v02f.py
+1. GCRsim_v02i.py
 
    Purpose:
     Core simulation engine for generating GCR events and their interactions within the detector medium.
@@ -22,7 +22,7 @@ Three primary scripts form the backbone of the simulation and analysis workflow:
     Typical Usage:
     
     <pre> 
-    from GCRsim_v02f import CosmicRaySimulation
+    from GCRsim_v02i import CosmicRaySimulation
     
     # Set up a simulation instance and run
     sim = CosmicRaySimulation(config_file="config.yml")
@@ -38,7 +38,7 @@ Three primary scripts form the backbone of the simulation and analysis workflow:
     
     Tabular files (CSV/HDF5) with event-level energy deposition, position, and particle ID. This is run for a single species only, as specified by the species index passed in the config.yml file.
     
-3. electron_spread.py
+3. electron_spread2.py
 
    Purpose:
     Simulates charge diffusion and conversion of deposited energy into electron count and digital number (DN) maps.
@@ -114,8 +114,8 @@ Repository Structure
 <pre>
 HAZARD-simulator/
 ├── Sample Outputs/          # Example simulated output data
-├── GCRsim_v02f.py           # Main GCR simulation engine
-├── electron_spread.py       # Charge diffusion & DN map processor
+├── GCRsim_v02i.py           # Main GCR simulation engine
+├── electron_spread2.py       # Charge diffusion & DN map processor
 ├── GCR_GUI.py               # Tkinter-based GUI for visualization
 ├── requirements.txt         # List of Python dependencies
 ├── README.md                # (You are here!)
@@ -131,10 +131,10 @@ Run a full simulation pipeline:
 
 <pre>
 # 1. Simulate GCR events
-python GCRsim_v02f.py --config config.yml --output gcr_events.h5
+python GCRsim_v02i.py --config config.yml --output gcr_events.h5
 
 # 2. Process events to create DN maps
-python electron_spread.py --input gcr_events.h5 --output DN_map.npy
+python electron_spread2.py --input gcr_events.h5 --output DN_map.npy
 
 # 3. Visualize results with GUI
 python GCR_GUI.py</pre>
