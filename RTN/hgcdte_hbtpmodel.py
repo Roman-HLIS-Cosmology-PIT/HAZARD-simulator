@@ -1,24 +1,23 @@
 """
 hgcdte_hptb_model.py
 
-Effective hyperbolic tight-binding / k·p model for HgCdTe,
-following Krishnamurthy et al. (1995) for the conduction band
-dispersion:
+Effective hyperbolic band model for Hg1-xCdxTe, combining:
 
-    E_c(k; T) = E_g(T) + [ sqrt(γ(T) * k^2 + c(T)^2) - c(T) ]
+- Hyperbolic conduction-band dispersion from Krishnamurthy et al. (1995):
+    Ec(k; T) = Eg(x, T) + [ sqrt(γ(T) * k^2 + c(T)^2) - c(T) ]
 
-with (E_g, γ, c) taken from their Table II for a sample HgCdTe
-alloy. See:
-  S. Krishnamurthy et al., J. Electron. Mater. 24, 1121 (1995).
+- Empirical band gap Eg(x, T) from Chu et al. (1994):
+    Eg(x, T) = -0.295 + 1.87 x - 0.28 x^2
+               + (6 - 14 x + 3 x^2) * 1e-4 * T
+               + 0.35 x^4   [eV]
 
 This script:
-  * Interpolates E_g(T), γ(T), c(T) from the tabulated values.
-  * Builds a high-symmetry k-path in the fcc Brillouin zone.
-  * Plots valence + conduction band structure along that path.
-  * Plots a 2D kx–ky slice of the conduction band as a density map.
+  * Computes Eg(x, T) using Chu's formula.
+  * Interpolates γ(T), c(T) from Krishnamurthy tables.
+  * Builds an fcc high-symmetry k-path and plots Ev, Ec.
+  * Plots a 2D kx–ky map of the conduction band.
 
-You can later replace the (T, E_g, γ, c) arrays with those
-appropriate for x = 0.44 once you have them.
+You can change x_alloy and T_oper to match your detector.
 """
 
 import numpy as np
@@ -30,32 +29,59 @@ from typing import List, Tuple
 # Constants / units
 # ------------------------------------------------------------
 
-# We'll treat k in units of [1/Å], and energies in [eV].
-# Handy constant for a parabolic valence band:
-# ħ^2 / (2 m_e) ≈ 3.81 eV·Å^2
-HBAR2_OVER_2ME_EV_A2 = 3.81
+# k in [1/Å], energies in [eV]
+HBAR2_OVER_2ME_EV_A2 = 3.81   # ħ^2 / (2 m_e) in eV·Å^2
 
 
 # ------------------------------------------------------------
-# Parameters from Krishnamurthy et al. (Table II)
-# (example alloy in the paper; swap once you have x=0.44 data)
+# 1. Bandgap Eg(x, T) from Chu et al. (1994), Eq. (6)
 # ------------------------------------------------------------
 
-# Temperatures in K
+def energy_gap_chu(x: float, T: float) -> float:
+    """
+    Bandgap Eg(x, T) [eV] for Hg1-xCdxTe from Chu et al. (1994):
+
+        Eg(x, T) = -0.295 + 1.87 x - 0.28 x^2
+                   + (6 - 14 x + 3 x^2) * 1e-4 * T
+                   + 0.35 x^4
+
+    Valid for 0.170 <= x <= 0.443 and 77 K <= T <= 300 K
+    (you are using x ≈ 0.445, T ~ 89 K, which is very close).
+
+    Parameters
+    ----------
+    x : float
+        Cd molar fraction.
+    T : float
+        Temperature [K].
+
+    Returns
+    -------
+    float
+        Band gap Eg(x, T) in eV.
+    """
+    return (
+        -0.295
+        + 1.87 * x
+        - 0.28 * x**2
+        + (6.0 - 14.0 * x + 3.0 * x**2) * 1.0e-4 * T
+        + 0.35 * x**4
+    )
+
+
+# ------------------------------------------------------------
+# 2. γ(T), c(T) from Krishnamurthy et al. (1995), Table II
+#    (effective hyperbolic parameters; composition not explicit)
+# ------------------------------------------------------------
+
+# Temperatures in K (table grid)
 T_TABLE = np.array([
       1.0,  10.0,  20.0,  30.0,  40.0,  50.0,  60.0,  70.0,
      80.0,  90.0, 100.0, 150.0, 200.0, 250.0, 300.0, 350.0,
     400.0, 450.0, 500.0, 550.0, 600.0
 ])
 
-# Band gap E_g(T) in meV from Table II
-EG_ME_V_TABLE = np.array([
-    113.60, 112.67, 112.56, 114.44, 117.15, 120.42, 123.96,
-    127.65, 131.44, 135.28, 139.17, 158.85, 178.73, 198.68,
-    218.66, 238.65, 258.66, 278.67, 298.69, 318.71, 338.74
-])
-
-# γ(T) in eV·Å^2 (dimension inferred so that γ k^2 has units of eV)
+# γ(T) in eV·Å^2
 GAMMA_EVA2_TABLE = np.array([
     47.7656, 47.7553, 47.7169, 47.6421, 47.5582, 47.4461,
     47.3310, 47.2091, 47.0821, 46.9418, 46.7964, 46.1544,
@@ -74,85 +100,77 @@ C_EV_TABLE = np.array([
 @dataclass
 class HgCdTeHyperbolicParams:
     """
-    Effective parameters for the hyperbolic conduction-band model
-    at a given temperature T.
+    Effective parameters for the hyperbolic band model.
 
     Attributes
     ----------
+    x : float
+        Cd molar fraction.
     T : float
-        Temperature [K]
+        Temperature [K].
     Eg_eV : float
-        Band gap [eV]
+        Band gap Eg(x, T) [eV] from Chu et al.
     gamma_eVA2 : float
-        Hyperbolic γ parameter [eV·Å^2]
+        Hyperbolic γ(T) [eV·Å^2] from Krishnamurthy.
     c_eV : float
-        Hyperbolic c parameter [eV]
+        Hyperbolic c(T) [eV] from Krishnamurthy.
     m_h_over_me : float
-        Hole effective mass ratio (for a simple parabolic valence band)
+        Hole mass / free electron mass for simple parabolic Ev(k).
     """
+    x: float
     T: float
     Eg_eV: float
     gamma_eVA2: float
     c_eV: float
-    m_h_over_me: float = 0.30  # crude guess; adjust when you have data
+    m_h_over_me: float = 0.30  # crude hole mass guess
 
 
-def interpolate_hgcdte_params(T: float) -> HgCdTeHyperbolicParams:
+def interpolate_hgcdte_params(T: float, x: float) -> HgCdTeHyperbolicParams:
     """
-    Interpolate Eg(T), gamma(T), c(T) from the Krishnamurthy table.
+    Build HgCdTeHyperbolicParams at given T, x.
+
+    Eg(x, T) is computed from Chu's formula.
+    γ(T) and c(T) are interpolated from Krishnamurthy's table.
 
     Parameters
     ----------
     T : float
-        Temperature [K]
+        Temperature [K].
+    x : float
+        Cd molar fraction.
 
     Returns
     -------
     HgCdTeHyperbolicParams
-        Interpolated parameters at temperature T.
     """
-    # Clamp T to the table range to avoid extrapolation surprises.
     T_clamped = np.clip(T, T_TABLE.min(), T_TABLE.max())
 
-    Eg_meV = np.interp(T_clamped, T_TABLE, EG_ME_V_TABLE)
     gamma_eVA2 = np.interp(T_clamped, T_TABLE, GAMMA_EVA2_TABLE)
     c_eV = np.interp(T_clamped, T_TABLE, C_EV_TABLE)
 
-    Eg_eV = Eg_meV / 1000.0  # convert meV -> eV
+    Eg_eV = energy_gap_chu(x, T_clamped)
 
     return HgCdTeHyperbolicParams(
+        x=x,
         T=T_clamped,
         Eg_eV=Eg_eV,
         gamma_eVA2=gamma_eVA2,
         c_eV=c_eV,
-        m_h_over_me=0.30,  # you can refine this later
+        m_h_over_me=0.30,
     )
 
 
 # ------------------------------------------------------------
-# Band-structure formulas
+# 3. Band-structure formulas
 # ------------------------------------------------------------
 
 def conduction_energy(kvec: np.ndarray, p: HgCdTeHyperbolicParams) -> float:
     """
-    Conduction band energy E_c(k; T) [eV] following
-    Krishnamurthy's hyperbolic form:
+    Conduction band energy Ec(k; x, T) [eV]:
 
-        E_c(k; T) = E_g(T) + [ sqrt(γ(T) * k^2 + c(T)^2) - c(T) ],
+        Ec(k; x, T) = Eg(x, T) + [ sqrt(γ(T) k^2 + c(T)^2) - c(T) ],
 
-    where k = |kvec| in units of [1/Å].
-
-    Parameters
-    ----------
-    kvec : array-like, shape (3,)
-        k-vector in reciprocal space [1/Å].
-    p : HgCdTeHyperbolicParams
-        Effective parameters at temperature T.
-
-    Returns
-    -------
-    float
-        Conduction band energy [eV], measured from the valence band maximum.
+    with k = |kvec| in [1/Å].
     """
     k = np.linalg.norm(kvec)
     return p.Eg_eV + (np.sqrt(p.gamma_eVA2 * k * k + p.c_eV**2) - p.c_eV)
@@ -162,22 +180,9 @@ def valence_energy(kvec: np.ndarray, p: HgCdTeHyperbolicParams) -> float:
     """
     Simple parabolic valence band:
 
-        E_v(k; T) = - (ħ^2 / (2 m_h)) k^2,
+        Ev(k; T) = - (ħ^2 / (2 m_h)) k^2,
 
-    with m_h = m_h_over_me * m_e. This is a placeholder; the
-    conduction band is the main physically-calibrated piece here.
-
-    Parameters
-    ----------
-    kvec : array-like, shape (3,)
-        k-vector in reciprocal space [1/Å].
-    p : HgCdTeHyperbolicParams
-        Effective parameters at temperature T.
-
-    Returns
-    -------
-    float
-        Valence band energy [eV], with E_v(0) = 0.
+    where m_h = m_h_over_me * m_e.
     """
     k = np.linalg.norm(kvec)
     alpha = HBAR2_OVER_2ME_EV_A2 / p.m_h_over_me  # eV·Å^2
@@ -185,45 +190,27 @@ def valence_energy(kvec: np.ndarray, p: HgCdTeHyperbolicParams) -> float:
 
 
 def band_energies(kvec: np.ndarray, p: HgCdTeHyperbolicParams) -> np.ndarray:
-    """
-    Return [E_v(k), E_c(k)] as a 2-element array [eV].
-
-    Parameters
-    ----------
-    kvec : array-like, shape (3,)
-    p : HgCdTeHyperbolicParams
-
-    Returns
-    -------
-    np.ndarray, shape (2,)
-        [valence_energy, conduction_energy].
-    """
+    """Return [Ev(k), Ec(k)] in eV."""
     Ev = valence_energy(kvec, p)
     Ec = conduction_energy(kvec, p)
     return np.array([Ev, Ec])
 
 
 # ------------------------------------------------------------
-# High-symmetry path (fcc)
+# 4. High-symmetry path (fcc)
 # ------------------------------------------------------------
 
 @dataclass
 class KPoint:
     label: str
-    coord: np.ndarray  # fractional coordinates in units of (2π/a)
+    coord: np.ndarray  # fractional (2π/a) coords
 
 
 def make_fcc_high_symmetry_points() -> List[KPoint]:
     """
-    Define standard high-symmetry points in the fcc Brillouin zone
-    in conventional cubic coordinates (fractional of 2π/a).
+    Standard fcc path:
 
-    Γ = (0, 0, 0)
-    X = (0, 1, 0)
-    L = (0.5, 0.5, 0.5)
-    W = (1, 0.5, 0)
-    K = (0.75, 0.75, 0)
-    U = (1, 0.25, 0.25)
+      Γ – X – W – K – Γ – L – U – W – L – K
     """
     return [
         KPoint("Γ", np.array([0.0, 0.0, 0.0])),
@@ -245,24 +232,7 @@ def interpolate_k_path(
     a: float = 6.5,
 ) -> Tuple[np.ndarray, List[str], np.ndarray]:
     """
-    Build a k-path through the high-symmetry points.
-
-    Parameters
-    ----------
-    kpoints : list of KPoint
-    n_points_per_segment : int
-        Number of interpolation points per segment.
-    a : float
-        Lattice constant [Å]; k is scaled as (2π/a) * coord.
-
-    Returns
-    -------
-    k_list : (N, 3) array
-        k-vectors along the path [1/Å].
-    labels : list of str
-        High-symmetry point labels (for x-axis tick labels).
-    k_dist : (N,) array
-        Cumulative distance along the path [1/Å].
+    Build k-path in [1/Å] along the high-symmetry points.
     """
     coords = np.array([kp.coord for kp in kpoints])
     labels = [kp.label for kp in kpoints]
@@ -282,7 +252,7 @@ def interpolate_k_path(
 
     k_list = np.vstack(segments)  # (N, 3)
 
-    # cumulative distance along path
+    # cumulative distance
     N = k_list.shape[0]
     k_dist = np.zeros(N)
     for i in range(1, N):
@@ -293,7 +263,7 @@ def interpolate_k_path(
 
 
 # ------------------------------------------------------------
-# Plotting
+# 5. Plotting
 # ------------------------------------------------------------
 
 def plot_band_structure(
@@ -301,18 +271,7 @@ def plot_band_structure(
     n_points_per_segment: int = 80,
     a: float = 6.5,
 ) -> None:
-    """
-    Compute and plot band structure along an fcc high-symmetry path.
-
-    Parameters
-    ----------
-    params : HgCdTeHyperbolicParams
-        Effective parameters at the chosen temperature.
-    n_points_per_segment : int
-        Sampling density per segment.
-    a : float
-        Lattice constant [Å].
-    """
+    """Plot Ev, Ec along the fcc high-symmetry path."""
     kpoints = make_fcc_high_symmetry_points()
     k_list, labels, k_dist = interpolate_k_path(
         kpoints, n_points_per_segment=n_points_per_segment, a=a
@@ -339,16 +298,16 @@ def plot_band_structure(
     ax.plot(k_dist, E_valence, lw=1.5, label="Valence (parabolic)")
     ax.plot(k_dist, E_conduction, lw=1.5, label="Conduction (hyperbolic)")
 
-    for x in tick_positions:
-        ax.axvline(x=x, color="k", linewidth=0.5, linestyle="--")
+    for xline in tick_positions:
+        ax.axvline(x=xline, color="k", linewidth=0.5, linestyle="--")
 
     ax.set_xticks(tick_positions)
     ax.set_xticklabels(tick_labels)
     ax.set_ylabel("Energy [eV]")
     ax.set_xlim(k_dist[0], k_dist[-1])
     ax.set_title(
-        f"HgCdTe hyperbolic band model at T = {params.T:.1f} K\n"
-        r"$E_c(k) = E_g + (\sqrt{\gamma k^2 + c^2} - c)$"
+        f"Hg1-xCdxTe hyperbolic band model\n"
+        f"x={params.x:.3f}, T={params.T:.1f} K, Eg={params.Eg_eV:.3f} eV"
     )
     ax.legend()
     plt.tight_layout()
@@ -361,29 +320,16 @@ def plot_2d_conduction_map(
     kz: float = 0.0,
     kmax: float = 0.1,
 ) -> None:
-    """
-    Plot a 2D kx–ky slice of the conduction band as a density map.
-
-    Parameters
-    ----------
-    params : HgCdTeHyperbolicParams
-    nk : int
-        Number of grid points in each direction.
-    kz : float
-        Fixed kz [1/Å].
-    kmax : float
-        Maximum |kx| and |ky| sampled [1/Å].
-    """
+    """2D kx–ky slice of Ec(k) as a density map."""
     kx_vals = np.linspace(-kmax, kmax, nk)
     ky_vals = np.linspace(-kmax, kmax, nk)
 
     E_map = np.zeros((nk, nk))
-
     for ix, kx in enumerate(kx_vals):
         for iy, ky in enumerate(ky_vals):
             kvec = np.array([kx, ky, kz])
             Ec = conduction_energy(kvec, params)
-            E_map[iy, ix] = Ec  # iy = row (y), ix = col (x)
+            E_map[iy, ix] = Ec
 
     fig, ax = plt.subplots(figsize=(6, 5))
     im = ax.imshow(
@@ -393,11 +339,11 @@ def plot_2d_conduction_map(
         aspect="equal",
     )
     cbar = fig.colorbar(im, ax=ax)
-    cbar.set_label("Conduction band energy [eV]")
+    cbar.set_label("Ec [eV]")
 
     ax.set_title(
-        f"Conduction band E_c(kx, ky; kz={kz:.3f}) at T={params.T:.1f} K\n"
-        r"$E_c(k) = E_g + (\sqrt{\gamma k^2 + c^2} - c)$"
+        f"Conduction band Ec(kx, ky; kz={kz:.3f})\n"
+        f"x={params.x:.3f}, T={params.T:.1f} K, Eg={params.Eg_eV:.3f} eV"
     )
     ax.set_xlabel(r"$k_x$ [1/Å]")
     ax.set_ylabel(r"$k_y$ [1/Å]")
@@ -407,21 +353,23 @@ def plot_2d_conduction_map(
 
 
 # ------------------------------------------------------------
-# Main
+# 6. Main
 # ------------------------------------------------------------
 
 if __name__ == "__main__":
-    # Choose an operating temperature close to Roman darks
-    T_oper = 89.0  # K (example; adjust as appropriate)
-    params = interpolate_hgcdte_params(T_oper)
+    # Your Roman-like alloy and operating temperature:
+    x_alloy = 0.445
+    T_oper = 89.0  # K
 
-    print(f"Interpolated parameters at T = {params.T:.1f} K:")
-    print(f"  Eg(T)   = {params.Eg_eV:.4f} eV")
-    print(f"  gamma(T)= {params.gamma_eVA2:.4f} eV·Å^2")
-    print(f"  c(T)    = {params.c_eV:.4f} eV")
+    params = interpolate_hgcdte_params(T_oper, x_alloy)
+
+    print(f"Interpolated hyperbolic parameters at x={params.x:.3f}, T={params.T:.1f} K:")
+    print(f"  Eg(x,T)   = {params.Eg_eV:.6f} eV (Chu fit)")
+    print(f"  gamma(T)  = {params.gamma_eVA2:.4f} eV·Å^2")
+    print(f"  c(T)      = {params.c_eV:.4f} eV")
 
     # 1) Band structure along high-symmetry path
     plot_band_structure(params, n_points_per_segment=80, a=6.5)
 
-    # 2) 2D kx–ky conduction-band map
+    # 2) 2D conduction-band map
     plot_2d_conduction_map(params, nk=201, kz=0.0, kmax=0.08)
