@@ -479,4 +479,5 @@ if __name__ == "__main__":
     parser.add_argument('--gain_txt', type=str, required=True, help='Gain map .txt file (column 5 = gain e/DN)')
     parser.add_argument('--output', type=str, default=None, help='Optional output .npy path for DN array')
     args = parser.parse_args()
+
     process_electrons_to_DN_by_blob(args.csvfile, args.gain_txt, output_DN_path=args.output)
