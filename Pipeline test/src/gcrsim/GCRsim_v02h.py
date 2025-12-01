@@ -557,10 +557,10 @@ class CosmicRaySimulation:
         self.c = 2.99792458e10  # Speed of light in cm/s
 
         # Energy range for primaries (in MeV)
-        self.E_min = 1e1 # MeV (should I have set this harsh boundary?)
-        self.E_max = 1e5 # MeV
-        self.start_ISO_energy = 1e7  # eV, only affects month.df
-        self.stop_ISO_energy = 1e11  # eV, only affects month.df
+        #self.E_min = 1e1 # MeV (should I have set this harsh boundary?)
+        #self.E_max = 1e5 # MeV
+        self.start_ISO_energy = 0.5e-3  # eV, only affects month.df #changing from 10 MeV to .3keV to test (and now to 1e-3)
+        self.stop_ISO_energy = 1e13  # eV, only affects month.df #changing from 100 GeV to 10TeV to test 
 
         # ISO model parameters
         self.dt = dt  # seconds
@@ -1430,7 +1430,7 @@ class CosmicRaySimulation:
                                                 self.C_list[species_idx], R, D, R0)
             val = np.exp(ln_phi)
             phi[i] = 0.0 if (not np.isfinite(val) or val <= 0) else val # (s*sr*m^2*GV)^-1
-            delta_R[i] = self.delta_rigidity(Eev*1-9, dE[i]*1e-9, A, Zp, m*1e-9) # GV
+            delta_R[i] = self.delta_rigidity(Eev*1e-9, dE[i]*1e-9, A, Zp, m*1e-9) # GV
             
         flux_z = delta_R*phi # (s*sr*m^2)^-1
         return E_mid, dE, flux_z  # centers (eV/nucleon), widths (eV/nucleon), flux_z in (s*sr*m^2)^-1 
@@ -1488,7 +1488,7 @@ class CosmicRaySimulation:
         if extend_low_electron_E and E_e_min_eV < e_edges[0]:
             extra_bins = np.logspace(np.log10(E_e_min_eV),np.log10(self.start_ISO_energy),101)
             extra_bins = extra_bins[:-1]
-            e_edges = np.concatenate((extra_bins,kin_energy_bins_eV)) # eV/nucleon (or just eV since now were considering energ of the electrons?)
+            e_edges = np.concatenate((extra_bins,kin_energy_bins_eV)) # eV/nucleon (or just eV since now were considering energy of the electrons?)
 
         E_e_mid_eV = 0.5 * (e_edges[:-1] + e_edges[1:]) # eV/nucleon
         dE_e_eV    = np.diff(e_edges) # eV/nucleon
@@ -1542,8 +1542,12 @@ class CosmicRaySimulation:
                     F_e[iE] += contrib / lnLambda #(s*sr*m^2*MeV)^-1 
                 if zcharge == 26 and iE%4 == 0:
                     print(f'Ez_min (MeV)={Ezmin},mask={mask},Wm (MeV) = {Wm}, bet = {bet}, FZ_i (s*st*m^2)^-1= {FZ_i}, beta_e={beta_e},K (MeV^-1)={K},contribution(s*st*m^2*MeV)^-1 ={contrib},F_e (s*st*m^2*MeV)^-1 ={F_e}')
-                    
-            # Output is a flux density per eV on e_edges?
+        
+    
+        # Make sure we never return a negative δ-electron flux
+        F_e = np.asarray(F_e, dtype=float)
+        F_e[F_e < 0] = 0.0
+
         return e_edges, E_e_mid_eV, F_e*1e-6  # units = {eV/nucleon,eV/nucleon,(s*st*m^2*eV)^-1} changed energy units from MeV to eV
 
 #END NEW DELTA RAY CODE
@@ -1726,7 +1730,10 @@ class CosmicRaySimulation:
 
                 T_delta = 0.0
                 # --- Delta ray production ---
-                T_min = 0.001  # 1 keV in MeV
+                #T_min = 1e-5  # Change from 1 keV in MeV to 10eV in MeV, and then changed back when this ate up too much time (also think its unallowed per PDG?)
+                #can also try setting it to I0? seems supported by literature
+                T_min = self.I0/5 # I0 ~ 582 eV in MeV => setting T_min to ~ 116 eV in MeV
+                
                 T_max_val = self.Tmax_primary(current_energy) # MeV
                 if T_max_val > current_energy:
                     T_max_val = current_energy
@@ -1925,7 +1932,7 @@ class CosmicRaySimulation:
             e_edges, e_centers, F_e = self.compute_secondary_electron_flux(
                 kin_energy_bins_eV=kin_energy_bins,
                 extend_low_electron_E=True,
-                E_e_min_eV=1e3
+                E_e_min_eV=0.5e-3  #change from 1keV in eV to 0.5meV in eV
             ) # units={eV/nucleon,eV/nucleon,(s*sr*m^2*eV)^-1} but here nucleon # = 1 because its electrons?
             #debug prints
             print_objects = [e_edges,e_centers,F_e]
@@ -2020,6 +2027,9 @@ class CosmicRaySimulation:
         loglog: bool = True,
         xmin: float | None = None,
         xmax: float | None = None,
+        ymin: float | None = None,
+        ymax: float | None = None,
+        alpha: float | None = None,
     ):
         """
         Plot the mean number of particles vs kinetic energy for this species,
@@ -2053,7 +2063,17 @@ class CosmicRaySimulation:
             fig, ax = plt.subplots(figsize=(10, 6))
             created_fig = True
 
-        ax.hist(
+        if alpha is not None:
+                    ax.hist(
+            E_centers,
+            bins=bin_edges,
+            weights=weights,
+            histtype="bar",
+            label=label,
+            alpha = alpha
+        )
+        else:
+                    ax.hist(
             E_centers,
             bins=bin_edges,
             weights=weights,
@@ -2075,6 +2095,15 @@ class CosmicRaySimulation:
             if xmax is not None:
                 hi = xmax
             ax.set_xlim(lo, hi)
+            
+        if ymin is not None or ymax is not None:
+            # Get existing limits
+            lo, hi = ax.get_ylim()
+            if ymin is not None:
+                lo = ymin
+            if ymax is not None:
+                hi = ymax
+            ax.set_ylim(lo, hi)        
 
         ax.grid(True, which="both", ls="--")
         ax.legend()
