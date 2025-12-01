@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from importlib.resources import files
 import h5py
 import numpy as np
+import matplotlib.pyplot as plt
 import pandas as pd
 from tqdm import tqdm
 
@@ -391,7 +392,7 @@ class CosmicRaySimulation:
               76*(0.9382720813e9) + 116*(0.9395654133e9), 77*(0.9382720813e9) + 116*(0.9395654133e9), 78*(0.9382720813e9) + 116*(0.9395654133e9),
               79*(0.9382720813e9) + 118*(0.9395654133e9), 80*(0.9382720813e9) + 122*(0.9395654133e9), 81*(0.9382720813e9) + 124*(0.9395654133e9),
               82*(0.9382720813e9) + 126*(0.9395654133e9), 83*(0.9382720813e9) + 126*(0.9395654133e9), 90*(0.9382720813e9) + 142*(0.9395654133e9),
-              92*(0.9382720813e9) + 146*(0.9395654133e9) ] # masses in eV/nucleon (except for z<2) **PER ISO DEFINITION**
+              92*(0.9382720813e9) + 146*(0.9395654133e9) ] # masses in eV/nucleon (except for z<2) 
     A_list = [ 1.0, 1.0, (4.0), (6.9), (9.0), (10.8), (12.0), (14.0), (16.0), (19.0),
              (20.2), (23.0), (24.34), (27.0), (28.1), (31.0), (32.1), (35.4),
              (39.9), (39.1), (40.1), (44.9), (47.9), (50.9), (52.0), (54.9),
@@ -529,7 +530,7 @@ class CosmicRaySimulation:
 
         """
         self.Z_particle = self.Z_list[species_index] # unitless
-        self.M = self.m_list[species_index] * 1e-6  # Convert from eV/c^2 to MeV/c^2
+        self.M = self.m_list[species_index] * self.A_list[species_index] * 1e-6  # Convert from eV/nucleon to MeV (eV to MeV for z<2) by accounting for # of nucleons and rescaling 
         self.species_index = species_index # unitless
         self.grid_size = grid_size # unitless
         self.cell_size = cell_size # um
@@ -551,12 +552,12 @@ class CosmicRaySimulation:
         self.X0 = X0 # cm
 
         # Other simulation constants
-        self.me = self.m_list[0] * 1e-6  # Electron mass in MeV/c^2 (also MeV/nucleon)
+        self.me = self.m_list[0] * self.A_list[0] * 1e-6  # Convert from eV/nucleon to MeV (eV to MeV for z<2) by accounting for # of nucleons and rescaling
         self.K = 0.307075  # MeV cm^2/mol
         self.c = 2.99792458e10  # Speed of light in cm/s
 
         # Energy range for primaries (in MeV)
-        self.E_min = 1e1 # MeV
+        self.E_min = 1e1 # MeV (should I have set this harsh boundary?)
         self.E_max = 1e5 # MeV
         self.start_ISO_energy = 1e7  # eV, only affects month.df
         self.stop_ISO_energy = 1e11  # eV, only affects month.df
@@ -579,6 +580,11 @@ class CosmicRaySimulation:
         self.max_workers = max_workers or 4  
         self._lock = threading.Lock()
 
+        # Will hold the per-energy-bin ISO table for this species
+        # Columns: Start/End/Bin Center/Bin Width/Mean # of particles
+        self.num_part_table = None
+
+
     @classmethod
     def run_full_sim(
         cls,
@@ -588,6 +594,7 @@ class CosmicRaySimulation:
         pad_pixels: int = 4, #num of reference pixels on each SCA edge
         pad_mode: str = "constant",
         pad_value: int | float = 0,
+        return_sims: bool = False,
         **sim_kwargs,  # keep this last so callers can still pass any other kwargs
     ):
         """
@@ -625,6 +632,7 @@ class CosmicRaySimulation:
         heatmap_list = []
         streaks_list = []
         gcr_counts = []
+        sim_list = []
 
         for idx in tqdm(
             range(len(cls.Z_list)), desc="Running simulation for each species", disable=not progress_bar
@@ -643,6 +651,7 @@ class CosmicRaySimulation:
             heatmap, streaks, count = sim.run_sim()
             heatmap_list.append(heatmap)
             streaks_list.append(streaks)
+            sim_list.append(sim)
             name = cls.species_names_dict.get(idx, f"Z={sim.Z_particle}")
             gcr_counts.append((name, count))
 
@@ -650,12 +659,24 @@ class CosmicRaySimulation:
         for hm in heatmap_list:
             # in-place: does not allocate a new array
             np.add(combined_heatmap, hm, out=combined_heatmap, casting='unsafe')
-        return (
-            combined_heatmap,
-            heatmap_list,
-            streaks_list,
-            gcr_counts,
-        )  
+            
+            
+        if return_sims:
+            return (
+                combined_heatmap,
+                heatmap_list,
+                streaks_list,
+                gcr_counts,
+                sim_list,        
+            )
+        else:
+            # Backwards-compatible 4-tuple
+            return (
+                combined_heatmap,
+                heatmap_list,
+                streaks_list,
+                gcr_counts,
+            )
 
     @staticmethod
     def encode_pid(species_idx, primary_idx, delta_idx):
@@ -1045,11 +1066,11 @@ class CosmicRaySimulation:
         float
             Maximum energy transfer `T_max` (MeV) from the primary to an electron.
         """
-        beta_val = self.relative_velocity(Ekin*1e-3, self.M*1e-3)
-        gamma_val = self.gamma(Ekin*1e-3, self.M*1e-3) # Ekin and self.M sent as GeV/nucleon
+        beta_val = self.beta(Ekin, self.M) # send as {MeV, MeV}, received unitless
+        gamma_val = self.gamma(Ekin, self.M) # send as {MeV, MeV}, received unitless
         return (2 * self.me * beta_val**2 * gamma_val**2) / (
             1 + 2 * gamma_val * self.me / self.M + (self.me / self.M) ** 2
-        ) #returned in MeV (or MeV/nucleon)
+        ) #returned in MeV 
 
     def dEdx_primary(self, Ekin):
         """
@@ -1067,8 +1088,8 @@ class CosmicRaySimulation:
         float
             Stopping power (MeV/cm) in the current material at the given energy.
         """
-        beta_val = self.relative_velocity(Ekin*1e-3, self.M*1e-3) # unitless, Ekin and self.M sent as GeV/nucleon
-        gamma_val = self.gamma(Ekin*1e-3, self.M*1e-3) # unitless, Ekin and self.M sent as GeV/nucleon
+        beta_val = self.beta(Ekin, self.M) # send as {MeV, MeV}, received unitless
+        gamma_val = self.gamma(Ekin, self.M) # send as {MeV, MeV}, received unitless
         tmax = self.Tmax_primary(Ekin) # MeV
         prefactor = (self.K * self.material_Z * self.Z_particle**2) / (self.material_A * beta_val**2) # MeV*cm^2*mol^-1 *(mol/g) ((and density has units of g/cm^3))
         argument = (2 * self.me * self.c**2 * beta_val**2 * gamma_val**2 * tmax) / (self.I0**2) # unitless
@@ -1107,7 +1128,7 @@ class CosmicRaySimulation:
         energy : float
             Kinetic energy (GeV)/nucleon.
         A : float
-            Mass number (unitless).
+            Mass number (unitless) (the number of nucleons).
         Z : int
             Charge number (can be negative for electrons).
         m : float
@@ -1328,29 +1349,52 @@ class CosmicRaySimulation:
         return delta_R # GV 
 
     @staticmethod
-    def relative_velocity(energy, m):
+    def relative_velocity(R,m,A,Z):
         """
-        Dimensionless speed :math:`\\beta` from kinetic energy and mass.
+        Dimensionless speed, β, from rigidity R , mass m (in GeV/nucleon), mass number A, and charge number Z.
 
         Parameters
         ----------
-        energy : float
-            Kinetic energy (GeV)/nucleon.
+        R : float
+            Rigidity in (GV).
         m : float
             Rest mass (GeV)/nucleon.
+        A : float
+            nucleon (mass) number (unitless) (number of nucleons).
+        Z : float
+            charge number 
 
         Returns
         -------
         float
             :math:`\\beta = v/c` (clipped to a small positive minimum for stability).
         """
-        energy = np.asarray(energy, dtype=float)
-        m = float(m)
-        beta = np.sqrt(energy * (energy + 2.0 * m)) / (energy + m)
-        return np.maximum(beta, 1e-20)
+        denom = np.sqrt(R**2 + ((A*m)/np.abs(Z))**2 )
+        return np.maximum(R/denom,1e-40) # unitless
         #beta = (1 / (energy + m)) * (np.sqrt(energy * (energy + 2 * m)))
         #return max(beta, 1e-20) # unitless
 
+    @staticmethod
+    def beta(Ekin, mass):
+        """
+        Compute the dimensionless relativistic velocity β = v/c for a particle from kinetic energy, Ekin, and mass.
+
+        Parameters
+        ----------
+        Ekin : float
+            Kinetic energy of the particle in MeV.
+        mass : float
+            Rest mass energy of the particle in MeV.
+
+        Returns
+        -------
+        float
+            The dimensionless velocity β = p / E_total, where
+            p = sqrt(Ekin(Ekin+2*mass)) and E_total = Ekin + mass.
+        """
+        total_energy = Ekin + mass # MeV
+        p = np.sqrt(Ekin*(Ekin+2*mass)) #MeV
+        return p / total_energy #unitless
 
 #NEW DELTA RAY POPULATION CODE BELOW
 
@@ -1379,7 +1423,7 @@ class CosmicRaySimulation:
         for i, Eev in enumerate(E_mid):
             R   = self.rigidity(Eev*1e-9, A, Zp, m*1e-9) # GV
             R0  = self.compute_R0(self.date, R) # GV
-            bet = self.relative_velocity(Eev*1e-9, m*1e-9) # unitless
+            bet = self.relative_velocity(R,m*1e-9,A,Zp) # s:{GV,GeV/nucleon, # nucleons, charge #}, r: unitless
             g   = self.gamma_func(R, species_idx) # unitless
             D   = self.Delta(Zp, bet, R, R0) # unitless
             ln_phi = self.log_rigidity_spectrum(self.alpha_list[species_idx], bet, g,
@@ -1394,8 +1438,8 @@ class CosmicRaySimulation:
 
     def _Wmax_primary(self, Ekin_MeV, M_MeV):
         """W_max (MeV) for a primary with kinetic energy Ekin_MeV and rest mass M_MeV."""
-        beta_val  = self.relative_velocity(Ekin_MeV*1e-3, M_MeV*1e-3) # Ekin_MeV and M_MeV sent as GeV/nucleon
-        gamma_val = self.gamma(Ekin_MeV*1e-3, M_MeV*1e-3) # Ekin_MeV and M_MeV sent as GeV/nucleon
+        beta_val = self.beta(Ekin_MeV, self.M) # send as {MeV, MeV}, received unitless
+        gamma_val = self.gamma(Ekin_MeV, self.M) # send as {MeV, MeV}, received unitless
         return (2.0 * self.me * beta_val**2 * gamma_val**2) / (
             1.0 + 2.0 * gamma_val * self.me / M_MeV + (self.me / M_MeV)**2 ) # MeV
 
@@ -1458,11 +1502,11 @@ class CosmicRaySimulation:
             # Primary flux density for this species (per eV)
             Ep_mid_eV, dEp_eV, flux_z = self._primary_flux_per_species(sidx, e_edges) # Ep_mid_eV and dEp_eV in eV/nucleon, units of flux_z are (s*sr*m^2)^-1
             # Kinematics for this species
-            M_MeV = self.m_list[sidx] * 1e-6 # MeV/nucleon (MeV for z<2)
-            Ep_mid_MeV = Ep_mid_eV * 1e-6 # MeV/nucleon  (MeV for z<2)
+            M_MeV = self.m_list[sidx] * self.A_list[sidx] * 1e-6 # MeV 
+            Ep_mid_MeV = Ep_mid_eV * self.A_list[sidx] * 1e-6 # MeV
 
             # β_z(E'_z) and Wmax(E'_z)
-            beta_p = np.array([self.relative_velocity(Ep*1e-3, M_MeV*1e-3) for Ep in Ep_mid_MeV]) #unitless, Ep and M_MeV sent as GeV/nucleon
+            beta_p = np.array([self.beta(Ep, M_MeV) for Ep in Ep_mid_MeV]) #unitless, Ep and M_MeV sent as MeV
             Wmax   = np.array([self._Wmax_primary(Ep, M_MeV) for Ep in Ep_mid_MeV])  # MeV
 
             # Precompute logs safely
@@ -1472,7 +1516,7 @@ class CosmicRaySimulation:
                     continue
 
                 # Heaviside Θ(E′ - E_{z,min}(E))
-                Ezmin = self._Eproj_min_from_electron_E(Te, M_MeV)/self.A_list[sidx] # MeV/nucleon (MeV for z<2) * (num of nucleon) = MeV
+                Ezmin = self._Eproj_min_from_electron_E(Te, M_MeV)/self.A_list[sidx] # MeV/nucleon (MeV for z<2) * (num of nucleon) = MeV (we divided?)
                 mask  = Ep_mid_MeV >= Ezmin
                 if not np.any(mask):
                     continue
@@ -1483,7 +1527,8 @@ class CosmicRaySimulation:
                 dEp  = dEp_eV[mask]  # eV
 
                 # Compute beta of the delta electrons at this E (Te)
-                beta_e = self.relative_velocity(Te*1e-3, self.me*1e-3)
+                beta_e = self.beta(Te, self.me) #needs to be a call to beta, send as {MeV, MeV} since Te for electrons is MeV
+                #beta_e = self.relative_velocity(Te*1e-3, self.me*1e-3)
 
                 # kernel with β_e² z² factor
                 ratio = np.clip(Wm / Te, 1.0, None)
@@ -1504,7 +1549,7 @@ class CosmicRaySimulation:
 #END NEW DELTA RAY CODE
 
 
-    def propagate_delta_rays(self, heatmap, x, y, z, theta, phi, init_en, PID, streaks):
+    def propagate_delta_ray(self, heatmap, x, y, z, theta, phi, init_en, PID, streaks):
         """
         Propagate a secondary (delta ray) particle.
         Records the trajectory on the heatmap and appends a streak record.
@@ -1629,8 +1674,8 @@ class CosmicRaySimulation:
         current_energy = init_en # MeV
         positions = [] # um
         theta0_values = [] # unitless
-        current_vels = [] # unitless?
-        new_vels = [] # unitless?
+        current_vels = [] # unitless
+        new_vels = [] # unitless
         energy_changes = [] # MeV
         theta_init, phi_init = theta, phi # unitless
         s_cm = s * 1e-4  # cm
@@ -1682,7 +1727,7 @@ class CosmicRaySimulation:
                 T_delta = 0.0
                 # --- Delta ray production ---
                 T_min = 0.001  # 1 keV in MeV
-                T_max_val = self.Tmax_primary(current_energy)
+                T_max_val = self.Tmax_primary(current_energy) # MeV
                 if T_max_val > current_energy:
                     T_max_val = current_energy
 
@@ -1697,7 +1742,7 @@ class CosmicRaySimulation:
                     Z = self.material_Z # unitless
                     A = self.material_A # g/mol
                     z = self.Z_particle # unitless
-                    beta = self.relative_velocity(current_energy, self.M) # unitless
+                    beta = self.beta(current_energy, self.M) # unitless
                     rho = self.material_density  # g/cm^3
                     s_cm = self.step_size * 1e-4  # cm
                     E_tot = current_energy + self.M  # total energy (MeV)
@@ -1844,9 +1889,9 @@ class CosmicRaySimulation:
         for iE in range(len(kin_energies)):
             E = kin_energies[iE] # eV/nucleon
             delta_E = delta_energies[iE] # eV/nucleon
-            R = self.rigidity(E*1e-9, self.A_list[idx], self.Z_list[idx], self.m_list[idx]*1e-9) # GV
-            R0 = self.compute_R0(self.date, R) # GV
-            beta = self.relative_velocity(E*1e-9, self.m_list[idx]*1e-9) # unitless
+            R = self.rigidity(E*1e-9, self.A_list[idx], self.Z_list[idx], self.m_list[idx]*1e-9) # s: {GeV/nucleon, # nucleons, charge #, GeV/nucleon}; r: GV
+            R0 = self.compute_R0(self.date, R) # s: GV; r: GV
+            beta = self.relative_velocity(R, self.m_list[idx]*1e-9, self.A_list[idx], self.Z_list[idx]) # s: {GV, GeV/nucleon, # nucleons, charge number}; r: {unitless}
             g_val = self.gamma_func(R, idx) # unitless
             D = self.Delta(self.Z_list[idx], beta, R, R0) #unitless
             ln_phi = self.log_rigidity_spectrum(self.alpha_list[idx], beta, g_val, self.C_list[idx], R, D, R0)
@@ -1866,8 +1911,8 @@ class CosmicRaySimulation:
             {
                 "Start Energy (eV)": kin_energy_bins[:-1],
                 "End Energy (eV)": kin_energy_bins[1:],
-                "Bin Center Energy (eV)": kin_energies,
-                "Bin Width (eV)": delta_energies,
+                "Bin Center Energy (eV)": kin_energies, #should I be marking these as eV/nucleon as well??
+                "Bin Width (eV)": delta_energies, #should I be marking these as eV/nucleon as well??
                 "Mean # of particles": product_values,
             }
         )
@@ -1881,7 +1926,7 @@ class CosmicRaySimulation:
                 kin_energy_bins_eV=kin_energy_bins,
                 extend_low_electron_E=True,
                 E_e_min_eV=1e3
-            ) # units={eV/nucleon,eV/nucleon,(s*sr*m^2*eV)^-1}
+            ) # units={eV/nucleon,eV/nucleon,(s*sr*m^2*eV)^-1} but here nucleon # = 1 because its electrons?
             #debug prints
             print_objects = [e_edges,e_centers,F_e]
             for i in range(len(print_objects)):
@@ -1889,7 +1934,11 @@ class CosmicRaySimulation:
                 
             # Convert flux density [per eV] → expected counts (ΔE × Ω × Δt × A)
             dE_e = np.diff(e_edges) # eV/nucleon
-            extra_means = np.nan_to_num(F_e * dE_e * self.dOmega * self.dt * self.dA) #  (num of particles) /nucleon #Do I need to multiply through A?
+            extra_means = np.nan_to_num(F_e * dE_e * self.dOmega * self.dt * self.dA) #  (num of particles) /nucleon #Do I need to multiply through A list?
+            
+            #debug prints
+            print(f"Extra means per species:")
+            print(extra_means)
             # Baseline electron mean particle counts (from primaries)
             base = np.nan_to_num(num_part_table['Mean # of particles'].to_numpy(copy=True))
 
@@ -1904,6 +1953,9 @@ class CosmicRaySimulation:
             num_part_table['Mean # of particles'] = combined_means
 
 #END NEW DELTA RAY CODE
+
+        # Cache a copy of the final per-energy-bin table on the instance
+        self.num_part_table = num_part_table.copy()
         
         
         primary_gcr_count = 0
@@ -1960,10 +2012,98 @@ class CosmicRaySimulation:
 
         return heatmap, species_streaks, primary_gcr_count
 
+    def plot_energy_spectrum(
+        self,
+        ax=None,
+        show: bool = True,
+        label: str | None = None,
+        loglog: bool = True,
+        xmin: float | None = None,
+        xmax: float | None = None,
+    ):
+        """
+        Plot the mean number of particles vs kinetic energy for this species,
+        using the cached `num_part_table`.
+
+        Requires that `run_sim()` has been called on this instance so that
+        `self.num_part_table` is populated.
+        """
+        if self.num_part_table is None:
+            raise RuntimeError(
+                "num_part_table is not set. Run sim.run_sim() on this instance first."
+            )
+
+        df = self.num_part_table
+
+        E_centers = df["Bin Center Energy (eV)"].to_numpy()
+        E_start   = df["Start Energy (eV)"].to_numpy()
+        E_end     = df["End Energy (eV)"].to_numpy()
+        weights   = df["Mean # of particles"].to_numpy()
+
+        # Reconstruct bin edges from start/end
+        bin_edges = np.concatenate([E_start, E_end[-1:]])
+
+        if label is None:
+            Z = self.Z_list[self.species_index]
+            m = self.m_list[self.species_index]
+            label = f"Z={Z}, m={m:.2e} eV"
+
+        created_fig = False
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            created_fig = True
+
+        ax.hist(
+            E_centers,
+            bins=bin_edges,
+            weights=weights,
+            histtype="bar",
+            label=label,
+        )
+        ax.set_xlabel("Kinetic Energy (eV)")
+        ax.set_ylabel("Mean Number of Particles")
+
+        if loglog:
+            ax.set_xscale("log")
+            ax.set_yscale("log")
+
+        if xmin is not None or xmax is not None:
+            # Get existing limits
+            lo, hi = ax.get_xlim()
+            if xmin is not None:
+                lo = xmin
+            if xmax is not None:
+                hi = xmax
+            ax.set_xlim(lo, hi)
+
+        ax.grid(True, which="both", ls="--")
+        ax.legend()
+
+        if created_fig and show:
+            plt.show()
+
+        return ax
+
+    def total_expected_primaries(self) -> float:
+        """
+        Total expected number of particles for this species,
+        i.e. sum over `Mean # of particles` across all energy bins.
+
+        Requires that `run_sim()` has been called.
+        """
+        if self.num_part_table is None:
+            raise RuntimeError(
+                "num_part_table is not set. Run sim.run_sim() on this instance first."
+            )
+
+        values = self.num_part_table["Mean # of particles"].to_numpy()
+        return float(np.nansum(values))
+
+
     def _propagate_delta_ray_threadsafe(self, heatmap, x, y, z, theta, phi, init_en, PID, streaks): # {x,y,theta,phi} unitless, energy in MeV
-        """Wrapper to call propagate_delta_rays under a lock."""
+        """Wrapper to call propagate_delta_ray under a lock."""
         with self._lock:
-            self.propagate_delta_rays(heatmap, x, y, z, theta, phi, init_en, PID, streaks)
+            self.propagate_delta_ray(heatmap, x, y, z, theta, phi, init_en, PID, streaks)
 
     def build_energy_loss_csv(self, streaks_list, csv_filename):
         """
