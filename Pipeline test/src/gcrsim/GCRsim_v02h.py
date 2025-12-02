@@ -559,7 +559,7 @@ class CosmicRaySimulation:
         # Energy range for primaries (in MeV)
         #self.E_min = 1e1 # MeV (should I have set this harsh boundary?)
         #self.E_max = 1e5 # MeV
-        self.start_ISO_energy = 0.5e-3  # eV, only affects month.df #changing from 10 MeV to .3keV to test (and now to 1e-3)
+        self.start_ISO_energy = 1e3  # eV, only affects month.df #changing from 10 MeV to 1keV to test 
         self.stop_ISO_energy = 1e13  # eV, only affects month.df #changing from 100 GeV to 10TeV to test 
 
         # ISO model parameters
@@ -661,7 +661,7 @@ class CosmicRaySimulation:
             np.add(combined_heatmap, hm, out=combined_heatmap, casting='unsafe')
             
             
-        if return_sims:
+        if return_sims: #this version saves the num_part_table for each species inside sim_list
             return (
                 combined_heatmap,
                 heatmap_list,
@@ -670,7 +670,7 @@ class CosmicRaySimulation:
                 sim_list,        
             )
         else:
-            # Backwards-compatible 4-tuple
+            # Backwards-compatible 4-tuple without sim_list
             return (
                 combined_heatmap,
                 heatmap_list,
@@ -1900,14 +1900,14 @@ class CosmicRaySimulation:
             R0 = self.compute_R0(self.date, R) # s: GV; r: GV
             beta = self.relative_velocity(R, self.m_list[idx]*1e-9, self.A_list[idx], self.Z_list[idx]) # s: {GV, GeV/nucleon, # nucleons, charge number}; r: {unitless}
             g_val = self.gamma_func(R, idx) # unitless
-            D = self.Delta(self.Z_list[idx], beta, R, R0) #unitless
+            D = self.Delta(self.Z_list[idx], beta, R, R0) # unitless
             ln_phi = self.log_rigidity_spectrum(self.alpha_list[idx], beta, g_val, self.C_list[idx], R, D, R0)
-            phi_val = np.exp(ln_phi) # (s*st*m^2*GV)^-1
+            phi_val = np.exp(ln_phi) # (s*st*m^2*GV)^-1 = dN/(dR dA dt dΩ)
             if not np.isfinite(phi_val) or phi_val <= 0:
                 phi_val = 0.0
 
-            delta_R = self.delta_rigidity(E*1e-9, delta_E*1e-9, self.A_list[idx], self.Z_list[idx], self.m_list[idx]*1e-9) # GV
-            product = phi_val * delta_R * self.dOmega * self.dt * self.dA # unitless
+            delta_R = self.delta_rigidity(E*1e-9, delta_E*1e-9, self.A_list[idx], self.Z_list[idx], self.m_list[idx]*1e-9) # GV ~ (dR/dE)*ΔE
+            product = phi_val * delta_R * self.dOmega * self.dt * self.dA # unitless = (dN/dR*dA*dt*dΩ)*ΔR * dΩ * dt *dA
             product_values.append(product) # unitless (num of particles)
 
         product_values = np.array(product_values)
@@ -1916,15 +1916,14 @@ class CosmicRaySimulation:
         # Build a DataFrame for the energy bins.
         year_df_bins = pd.DataFrame(
             {
-                "Start Energy (eV)": kin_energy_bins[:-1],
-                "End Energy (eV)": kin_energy_bins[1:],
-                "Bin Center Energy (eV)": kin_energies, #should I be marking these as eV/nucleon as well??
-                "Bin Width (eV)": delta_energies, #should I be marking these as eV/nucleon as well??
+                "Start Energy (eV/nuc)": kin_energy_bins[:-1],
+                "End Energy (eV/nuc)": kin_energy_bins[1:],
+                "Bin Center Energy (eV/nuc)": kin_energies, #should I be marking these as eV/nucleon as well?? (it is eV/nucleon, change later)
+                "Bin Width (eV/nuc)": delta_energies, #should I be marking these as eV/nucleon as well??
                 "Mean # of particles": product_values,
             }
         )
         num_part_table = year_df_bins
-        
         
 #NEW DELTA RAY POPULATION CODE
         if idx == 0:  # electron channel (Z = -1)
@@ -1932,7 +1931,7 @@ class CosmicRaySimulation:
             e_edges, e_centers, F_e = self.compute_secondary_electron_flux(
                 kin_energy_bins_eV=kin_energy_bins,
                 extend_low_electron_E=True,
-                E_e_min_eV=0.5e-3  #change from 1keV in eV to 0.5meV in eV
+                E_e_min_eV=1e3  #1keV in eV
             ) # units={eV/nucleon,eV/nucleon,(s*sr*m^2*eV)^-1} but here nucleon # = 1 because its electrons?
             #debug prints
             print_objects = [e_edges,e_centers,F_e]
@@ -1950,7 +1949,7 @@ class CosmicRaySimulation:
             base = np.nan_to_num(num_part_table['Mean # of particles'].to_numpy(copy=True))
 
             # Align grids — interpolate δ-electron flux onto the same energy centers
-            E_base = num_part_table['Bin Center Energy (eV)'].values # eV/nucleon
+            E_base = num_part_table['Bin Center Energy (eV/nuc)'].values # eV/nucleon
             E_extra = e_centers
             if E_extra.shape[0] != E_base.shape[0]:
                 extra_means = np.interp(E_base, E_extra, extra_means, left=0, right=0)
@@ -1979,8 +1978,8 @@ class CosmicRaySimulation:
             if count == 0:
                 continue
 
-            E_min = num_part_table["Start Energy (eV)"].iat[j] # eV/nucleon
-            E_max = num_part_table["End Energy (eV)"].iat[j] # eV/nucleon
+            E_min = num_part_table["Start Energy (eV/nuc)"].iat[j] # eV/nucleon
+            E_max = num_part_table["End Energy (eV/nuc)"].iat[j] # eV/nucleon
             streaks = []
             for _ in range(count):
                 x = np.random.randint(0, num_pixels)
@@ -2045,9 +2044,9 @@ class CosmicRaySimulation:
 
         df = self.num_part_table
 
-        E_centers = df["Bin Center Energy (eV)"].to_numpy()
-        E_start   = df["Start Energy (eV)"].to_numpy()
-        E_end     = df["End Energy (eV)"].to_numpy()
+        E_centers = df["Bin Center Energy (eV/nuc)"].to_numpy()
+        E_start   = df["Start Energy (eV/nuc)"].to_numpy()
+        E_end     = df["End Energy (eV/nuc)"].to_numpy()
         weights   = df["Mean # of particles"].to_numpy()
 
         # Reconstruct bin edges from start/end
