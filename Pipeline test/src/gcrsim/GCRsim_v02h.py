@@ -7,7 +7,6 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from tqdm import tqdm
 
-
 def mean_excitation_energy_HgCdTe(x):
     """
     Calculate the mean excitation energy for Hg_(1−x)Cd_(x)Te using Bragg's sum rule.
@@ -392,7 +391,7 @@ class CosmicRaySimulation:
               76*(0.9382720813e9) + 116*(0.9395654133e9), 77*(0.9382720813e9) + 116*(0.9395654133e9), 78*(0.9382720813e9) + 116*(0.9395654133e9),
               79*(0.9382720813e9) + 118*(0.9395654133e9), 80*(0.9382720813e9) + 122*(0.9395654133e9), 81*(0.9382720813e9) + 124*(0.9395654133e9),
               82*(0.9382720813e9) + 126*(0.9395654133e9), 83*(0.9382720813e9) + 126*(0.9395654133e9), 90*(0.9382720813e9) + 142*(0.9395654133e9),
-              92*(0.9382720813e9) + 146*(0.9395654133e9) ] # masses in eV/nucleon (except for z<2) 
+              92*(0.9382720813e9) + 146*(0.9395654133e9) ] # masses in eV
     A_list = [ 1.0, 1.0, (4.0), (6.9), (9.0), (10.8), (12.0), (14.0), (16.0), (19.0),
              (20.2), (23.0), (24.34), (27.0), (28.1), (31.0), (32.1), (35.4),
              (39.9), (39.1), (40.1), (44.9), (47.9), (50.9), (52.0), (54.9),
@@ -404,6 +403,9 @@ class CosmicRaySimulation:
              (158.9), (162.5), (164.9), (167.3), (168.9), (173.0), (175.0), (178.5),
              (180.9), (183.9), (186.2), (190.2), (192.2), (195.1), (197.0), (200.6), 
              (204.4), (207.2), (232.0), (238.0) ] #unitless (mass number) (analogous to num of nucleons/particle)
+    
+    m_list = [float(x) / float(y) for x, y in zip(m_list, A_list)] # NOW its in eV/nucleon
+    
     C_list = [ 170, 1.85e4, 3.69e3, 19.5, 17.7, 49.2, 103.0, 36.7, 87.4, 3.19, 16.4, 4.43, 19.3, 4.17, 13.4, 1.15, 3.06, 1.30,
              2.33, 1.87, 2.17, 0.74, 2.63, 1.23, 2.12, 1.14, 9.32, 0.10, 0.49,
              (9.32 * 6.8e-4), (9.32 * 8.8e-4), (9.32 * 6.5e-5), (9.32 * 1.4e-4), (9.32 * 8.9e-6), (9.32 * 5.2e-5), (9.32 * 9.7e-6), 
@@ -559,8 +561,10 @@ class CosmicRaySimulation:
         # Energy range for primaries (in MeV)
         #self.E_min = 1e1 # MeV (should I have set this harsh boundary?)
         #self.E_max = 1e5 # MeV
-        self.start_ISO_energy = 1e3  # eV, only affects month.df #changing from 10 MeV to 1keV to test 
-        self.stop_ISO_energy = 1e13  # eV, only affects month.df #changing from 100 GeV to 10TeV to test 
+        self.start_ISO_energy = 1e3  # eV/nuc, changing to eV/nuc by dividing by A_list
+        #self.start_ISO_energy = (1e3)/self.A_list[species_index] # now in eV/nuc
+        self.stop_ISO_energy = 1e13  # eV/nuc, changing to eV/nuc by dividing by A_list
+        #self.stop_ISO_energy = (1e13)/self.A_list[species_index] # now in eV/nuc
 
         # ISO model parameters
         self.dt = dt  # seconds
@@ -1140,7 +1144,7 @@ class CosmicRaySimulation:
             Rigidity (GV). A small floor (1e-20) is applied for numerical stability.
         """
         R = (A / abs(Z)) * (np.sqrt(energy * (energy + 2 * m))) # removed the (1e-9) from before because now {energy, m} come in as {GeV/nucleon, GeV/nucleon}
-        return max(R, 1e-20) # GV
+        return max(R, 1e-30) # GV
 
     def get_M_value(self, input_date, df):
         """
@@ -1343,7 +1347,7 @@ class CosmicRaySimulation:
         float
             Rigidity increment :math:`\\Delta R` (GV).
         """
-        numerator = (A / abs(Z)) * (E + m) * delta_E
+        numerator = (A / abs(Z)) * (E + m) * delta_E 
         denominator = np.sqrt(E * (E + 2 * m))
         delta_R = (numerator / denominator) #removed 1e-9 factor as now {E,delta_E,m} come in as GeV/nucleon
         return delta_R # GV 
@@ -1430,7 +1434,7 @@ class CosmicRaySimulation:
                                                 self.C_list[species_idx], R, D, R0)
             val = np.exp(ln_phi)
             phi[i] = 0.0 if (not np.isfinite(val) or val <= 0) else val # (s*sr*m^2*GV)^-1
-            delta_R[i] = self.delta_rigidity(Eev*1e-9, dE[i]*1e-9, A, Zp, m*1e-9) # GV
+            delta_R[i] = self.delta_rigidity(Eev*1e-9, dE[i]*1e-9, A, Zp, m*1e-9) # s:{GeV/nuc, GeV/nuc, # nuc, charge #, GeV/nuc}; r: GV
             
         flux_z = delta_R*phi # (s*sr*m^2)^-1
         return E_mid, dE, flux_z  # centers (eV/nucleon), widths (eV/nucleon), flux_z in (s*sr*m^2)^-1 
@@ -1460,9 +1464,9 @@ class CosmicRaySimulation:
 
     def compute_secondary_electron_flux(
         self,
-        kin_energy_bins_eV=None,
+        kin_energy_bins_eV=None, # eV/nuc
         extend_low_electron_E=True,
-        E_e_min_eV=1.0e3
+        E_e_min_eV=1.0e3 # 1 keV in eV
     ):
         """
         Implements the formula:
@@ -1482,13 +1486,13 @@ class CosmicRaySimulation:
         # Use/extend ISO binning
         if kin_energy_bins_eV is None:
             kin_energy_bins_eV = np.logspace(np.log10(self.start_ISO_energy),
-                                            np.log10(self.stop_ISO_energy), 101) # eV/nucleon (eV for z<2)
+                                            np.log10(self.stop_ISO_energy), 101) # eV/nucleon 
 
-        e_edges = kin_energy_bins_eV.copy() # eV/nucleon (eV for z<2)
+        e_edges = kin_energy_bins_eV.copy() # eV/nucleon 
         if extend_low_electron_E and E_e_min_eV < e_edges[0]:
             extra_bins = np.logspace(np.log10(E_e_min_eV),np.log10(self.start_ISO_energy),101)
             extra_bins = extra_bins[:-1]
-            e_edges = np.concatenate((extra_bins,kin_energy_bins_eV)) # eV/nucleon (or just eV since now were considering energy of the electrons?)
+            e_edges = np.concatenate((extra_bins,kin_energy_bins_eV)) # eV/nucleon
 
         E_e_mid_eV = 0.5 * (e_edges[:-1] + e_edges[1:]) # eV/nucleon
         dE_e_eV    = np.diff(e_edges) # eV/nucleon
@@ -1500,7 +1504,7 @@ class CosmicRaySimulation:
         # Loop over projectile species (z from your Z_list)
         for sidx, zcharge in enumerate(self.Z_list):
             # Primary flux density for this species (per eV)
-            Ep_mid_eV, dEp_eV, flux_z = self._primary_flux_per_species(sidx, e_edges) # Ep_mid_eV and dEp_eV in eV/nucleon, units of flux_z are (s*sr*m^2)^-1
+            Ep_mid_eV, dEp_eV, flux_z = self._primary_flux_per_species(sidx, e_edges) # s:eV/nuc ; r:{eV/nuc,eV/nuc ,(s*sr*m^2)^-1 }
             # Kinematics for this species
             M_MeV = self.m_list[sidx] * self.A_list[sidx] * 1e-6 # MeV 
             Ep_mid_MeV = Ep_mid_eV * self.A_list[sidx] * 1e-6 # MeV
@@ -1511,12 +1515,12 @@ class CosmicRaySimulation:
 
             # Precompute logs safely
             # We'll vectorize over electron energies E and sum over E'_z bins that satisfy Wmax >= E
-            for iE, Te in enumerate(E_e_mid_MeV): # MeV/nucleon  (MeV for z<2)
+            for iE, Te in enumerate(E_e_mid_MeV): # MeV/nucleon 
                 if Te <= 0.0:
                     continue
 
                 # Heaviside Θ(E′ - E_{z,min}(E))
-                Ezmin = self._Eproj_min_from_electron_E(Te, M_MeV)/self.A_list[sidx] # MeV/nucleon (MeV for z<2) * (num of nucleon) = MeV (we divided?)
+                Ezmin = self._Eproj_min_from_electron_E(Te, M_MeV)/self.A_list[sidx] # s:{MeV, MeV}; r: MeV, then MeV/nucleon
                 mask  = Ep_mid_MeV >= Ezmin
                 if not np.any(mask):
                     continue
@@ -1547,8 +1551,12 @@ class CosmicRaySimulation:
         # Make sure we never return a negative δ-electron flux
         F_e = np.asarray(F_e, dtype=float)
         F_e[F_e < 0] = 0.0
+        
+        #changing units for e_edges and E_e_mid_eV
+        e_edges = e_edges*self.A_list[self.species_index] # eV
+        E_e_mid_eV = E_e_mid_eV*self.A_list[self.species_index] # eV
 
-        return e_edges, E_e_mid_eV, F_e*1e-6  # units = {eV/nucleon,eV/nucleon,(s*st*m^2*eV)^-1} changed energy units from MeV to eV
+        return e_edges, E_e_mid_eV, F_e*1e-6  # units = {eV,eV,(s*st*m^2*eV)^-1} changed energy units from MeV to eV
 
 #END NEW DELTA RAY CODE
 
@@ -1887,7 +1895,7 @@ class CosmicRaySimulation:
         num_pixels = self.grid_size
         heatmap = np.zeros((num_pixels, num_pixels), dtype=int)
 
-        kin_energy_bins = np.logspace(np.log10(self.start_ISO_energy), np.log10(self.stop_ISO_energy), 101) #ISO energies in eV/nucleon
+        kin_energy_bins = np.logspace(np.log10(self.start_ISO_energy), np.log10(self.stop_ISO_energy), 101) #ISO energies in eV/nucleon 
         kin_energies = (kin_energy_bins[:-1] + kin_energy_bins[1:]) / 2 # eV/nucleon
         delta_energies = np.diff(kin_energy_bins) # eV/nucleon
 
@@ -1929,22 +1937,25 @@ class CosmicRaySimulation:
         if idx == 0:  # electron channel (Z = -1)
             # Compute δ-electron secondary flux
             e_edges, e_centers, F_e = self.compute_secondary_electron_flux(
-                kin_energy_bins_eV=kin_energy_bins,
+                kin_energy_bins_eV=kin_energy_bins, # eV/nuc
                 extend_low_electron_E=True,
                 E_e_min_eV=1e3  #1keV in eV
-            ) # units={eV/nucleon,eV/nucleon,(s*sr*m^2*eV)^-1} but here nucleon # = 1 because its electrons?
+            ) # units={eV,eV,(s*sr*m^2*eV)^-1} but here nucleon # = 1 because its electrons?
             #debug prints
             print_objects = [e_edges,e_centers,F_e]
             for i in range(len(print_objects)):
                 print(print_objects[i])
                 
             # Convert flux density [per eV] → expected counts (ΔE × Ω × Δt × A)
-            dE_e = np.diff(e_edges) # eV/nucleon
+            dE_e = np.diff(e_edges) # eV
             extra_means = np.nan_to_num(F_e * dE_e * self.dOmega * self.dt * self.dA) #  (num of particles) /nucleon #Do I need to multiply through A list?
+            #did that to e_edges annd E_e_mid_eV in compute_secondary...
+            total_extra = np.sum(extra_means)
             
             #debug prints
             print(f"Extra means per species:")
             print(extra_means)
+            print(f"Total extra electrons: {total_extra}")
             # Baseline electron mean particle counts (from primaries)
             base = np.nan_to_num(num_part_table['Mean # of particles'].to_numpy(copy=True))
 
@@ -1984,7 +1995,7 @@ class CosmicRaySimulation:
             for _ in range(count):
                 x = np.random.randint(0, num_pixels)
                 y = np.random.randint(0, num_pixels)
-                init_en = np.random.uniform(E_min, E_max)
+                init_en = np.random.uniform(E_min, E_max) # in eV/nucleon, should I multiply through by A_list to make it eV?
                 theta, phi, vel = self.generate_angles(init_en, self.m_list[idx])
                 encoded_PID = CosmicRaySimulation.encode_pid(idx, primary_counter, 0)
                 primary_counter += 1
@@ -2196,3 +2207,51 @@ class CosmicRaySimulation:
                         positions_list.append(streak[0])
                         en_changes_list.append(streak[-7])
         return positions_list, target_pid, en_changes_list
+    
+    def build_pdg_flux_table(self):
+        """
+        Convert num_part_table (which stores the expected number of particles
+        per energy bin over dt, dA, dOmega) into a PDG-style intensity:
+
+            J(E_n) = dN / (dE_n dA dt dOmega)
+                   [m^-2 s^-1 sr^-1 (GeV/nuc)^-1]
+
+        Returns
+        -------
+        pd.DataFrame with columns:
+          - 'E_n (GeV/nuc)'
+          - 'dE_n (GeV/nuc)'
+          - 'J(E_n) [m^-2 s^-1 sr^-1 (GeV/nuc)^-1]'
+        """
+        df = self.num_part_table.copy()
+
+        # Extract arrays from num_part_table
+        E_center_eV = df["Bin Center Energy (eV/nuc)"].to_numpy()
+        dE_eV       = df["Bin Width (eV/nuc)"].to_numpy()
+        dN          = df["Mean # of particles"].to_numpy()
+
+        # Convert energies to GeV/nuc
+        E_center_GeV = E_center_eV * 1e-9          # [GeV/nuc]
+        dE_GeV       = dE_eV * 1e-9                # [GeV/nuc]
+
+        # Prepare output array
+        J_E = np.full_like(E_center_GeV, np.nan, dtype=float)
+
+        # Avoid division by zero / NaNs
+        mask = np.isfinite(dN) & np.isfinite(dE_GeV) & (dE_GeV > 0)
+
+        # J(E_n) = dN / (dE * dA * dt * dOmega)
+        J_E[mask] = (
+            dN[mask] /
+            (dE_GeV[mask] * self.dA * self.dt * self.dOmega)
+        )
+
+        pdg_df = pd.DataFrame({
+            "E_n (GeV/nuc)": E_center_GeV,
+            "dE_n (GeV/nuc)": dE_GeV,
+            "J(E_n) [m^-2 s^-1 sr^-1 (GeV/nuc)^-1]": J_E,
+        })
+        
+        pdg_df["E_n^2 J(E_n)"] = pdg_df["E_n (GeV/nuc)"]**2 * pdg_df["J(E_n) [m^-2 s^-1 sr^-1 (GeV/nuc)^-1]"]
+
+        return pdg_df
