@@ -1515,13 +1515,21 @@ class CosmicRaySimulation:
 
             # Precompute logs safely
             # We'll vectorize over electron energies E and sum over E'_z bins that satisfy Wmax >= E
-            for iE, Te in enumerate(E_e_mid_MeV): # MeV/nucleon 
+            for iE, Te in enumerate(E_e_mid_MeV): # MeV/nucleon , here electron energies so MeV
                 if Te <= 0.0:
                     continue
 
                 # Heaviside Θ(E′ - E_{z,min}(E))
                 Ezmin = self._Eproj_min_from_electron_E(Te, M_MeV)/self.A_list[sidx] # s:{MeV, MeV}; r: MeV, then MeV/nucleon
-                mask  = Ep_mid_MeV >= Ezmin
+
+                # previous version
+                #mask  = Ep_mid_MeV >= Ezmin
+
+                # newer version
+                Ezmin = self._Eproj_min_from_electron_E(Te, M_MeV) / self.A_list[sidx]
+                mask  = (Ep_mid_MeV >= Ezmin) & (Wmax >= Te)
+
+
                 if not np.any(mask):
                     continue
 
@@ -1531,7 +1539,7 @@ class CosmicRaySimulation:
                 dEp  = dEp_eV[mask]  # eV
 
                 # Compute beta of the delta electrons at this E (Te)
-                beta_e = self.beta(Te, self.me) #needs to be a call to beta, send as {MeV, MeV} since Te for electrons is MeV
+                beta_e = self.beta(Te, self.me) # send as {MeV, MeV} since Te for electrons is MeV
                 #beta_e = self.relative_velocity(Te*1e-3, self.me*1e-3)
 
                 # kernel with β_e² z² factor
@@ -1555,6 +1563,17 @@ class CosmicRaySimulation:
         #changing units for e_edges and E_e_mid_eV
         e_edges = e_edges*self.A_list[self.species_index] # eV
         E_e_mid_eV = E_e_mid_eV*self.A_list[self.species_index] # eV
+
+
+        #debug plots
+        plt.figure()
+        plt.loglog(E_e_mid_eV, F_e + 1e-40)  # avoid log(0)
+        plt.xlabel("Te (eV)")
+        plt.ylabel("Secondary e- flux per eV")
+        plt.show()
+
+
+
 
         return e_edges, E_e_mid_eV, F_e*1e-6  # units = {eV,eV,(s*st*m^2*eV)^-1} changed energy units from MeV to eV
 
