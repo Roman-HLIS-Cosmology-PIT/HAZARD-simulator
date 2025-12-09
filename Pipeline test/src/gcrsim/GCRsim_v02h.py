@@ -557,6 +557,7 @@ class CosmicRaySimulation:
         self.me = self.m_list[0] * self.A_list[0] * 1e-6  # Convert from eV/nucleon to MeV (eV to MeV for z<2) by accounting for # of nucleons and rescaling
         self.K = 0.307075  # MeV cm^2/mol
         self.c = 2.99792458e10  # Speed of light in cm/s
+        self.fs_alpha = 1/(137.035999139)
 
         # Energy range for primaries (in MeV)
         #self.E_min = 1e1 # MeV (should I have set this harsh boundary?)
@@ -1460,122 +1461,196 @@ class CosmicRaySimulation:
         argument = (2.0 * self.me * (beta_e**2) * (gamma_e**2) * max(E_e_MeV, 1e-30)) / (self.I0**2) #unitless
         argument = max(argument, 1e-300)
         return np.log(argument) 
+    
+#functions required to compute radiative losses inside the spacecraft material surrounding the WFI
+    def _func_of_Z(self, Z_medium):
+        """
+        Computes f(Z) = 
+        
+        :param Z: Charge number (unitless)
+        Returns:
+        """
+        fs_alpha = self.fs_alpha
+        a = fs_alpha*Z_medium
+        result = a**2 * ( (1/(1+a**2)) + 0.20206 - 0.0369*(a**2) + 0.0083*(a**4) - 0.002*(a**6) ) # unitless
 
+        return result
+
+    def _radiative_losses(self, Z_medium, gamma_e):
+        """
+        Computes the correction to the Bethe-Bloch dE/dx due to radiative losses
+        According to Bremsstrahlung losses in PDG Chp 34
+
+        :param Z: Charge number (unitless)
+        Returns: 
+        """
+        fs_alpha = self.fs_alpha
+        prefactor = ((2*fs_alpha)/np.pi) * (gamma_e - 1) * (1/Z_medium) # averaged by num of electrons
+        material_dep = (Z_medium*(np.log(184.15*(Z_medium)**(-(1/3)))
+                                  - self._func_of_Z(Z_medium)) + np.log(1194*(Z_medium)**(-(2/3))))
+        result = prefactor*material_dep # unitless
+        return result
 
     def compute_secondary_electron_flux(
         self,
-        kin_energy_bins_eV=None, # eV/nuc
+        kin_energy_bins_eV=None,  # eV/nuc
         extend_low_electron_E=True,
-        E_e_min_eV=1.0e3 # 1 keV in eV
+        E_e_min_eV=1.0e3          # 1 keV in eV
     ):
         """
         Implements the formula:
 
-        F_e(E) = (1 / ln Λ(E)) * sum_{z=-1}^{92} z^2 * β_e^2 ∑_{bins} [ F_z(E'_z) * K(E, E'_z) * Θ(Wmax(E'_z) - E) * ΔE'_z ]
+        F_e(E) = (1 / (ln Λ(E) + correction)) *
+                sum_{z} z^2 * β_e^2 ∑_{bins} [ F_z(E'_z) * K(E, E'_z) * Θ(Wmax(E'_z) - E) * ΔE'_z ]
 
         with
         K(E, E'_z) = 1/2 (1/E - 1/Wmax) - (β_z(E'_z)^2 / Wmax) * ln(Wmax/E)
 
-        The integral over dE'_z is evaluated as a Riemann sum over your energy bins,
-        and the Heaviside Θ implements the lower bound E_{z,min}(E).
-
         Returns
         -------
-        ebin_edges_eV, ebin_centers_eV, F_e_per_eV
+        e_edges      : ndarray
+            Electron energy bin edges [eV].
+        E_e_mid_eV   : ndarray
+            Electron energy bin centers [eV].
+        F_e_per_eV   : ndarray
+            Secondary electron flux per eV [(s·sr·m²·eV)^-1].
         """
-        # Use/extend ISO binning
+        debug_prints = False  # flip to True if you want debug prints / plots
+
+        # --- Use/extend ISO binning ---
         if kin_energy_bins_eV is None:
-            kin_energy_bins_eV = np.logspace(np.log10(self.start_ISO_energy),
-                                            np.log10(self.stop_ISO_energy), 101) # eV/nucleon 
+            kin_energy_bins_eV = np.logspace(
+                np.log10(self.start_ISO_energy),
+                np.log10(self.stop_ISO_energy),
+                101
+            )  # eV/nucleon
 
-        e_edges = kin_energy_bins_eV.copy() # eV/nucleon 
+        e_edges = kin_energy_bins_eV.copy()  # eV/nucleon
         if extend_low_electron_E and E_e_min_eV < e_edges[0]:
-            extra_bins = np.logspace(np.log10(E_e_min_eV),np.log10(self.start_ISO_energy),101)
+            extra_bins = np.logspace(
+                np.log10(E_e_min_eV),
+                np.log10(self.start_ISO_energy),
+                101
+            )
             extra_bins = extra_bins[:-1]
-            e_edges = np.concatenate((extra_bins,kin_energy_bins_eV)) # eV/nucleon
+            e_edges = np.concatenate((extra_bins, kin_energy_bins_eV))  # eV/nucleon
 
-        E_e_mid_eV = 0.5 * (e_edges[:-1] + e_edges[1:]) # eV/nucleon
-        dE_e_eV    = np.diff(e_edges) # eV/nucleon
-        E_e_mid_MeV = E_e_mid_eV * 1e-6  # MeV/nucleon
+        E_e_mid_eV  = 0.5 * (e_edges[:-1] + e_edges[1:])  # eV/nucleon
+        dE_e_eV     = np.diff(e_edges)                    # eV/nucleon (currently unused)
+        E_e_mid_MeV = E_e_mid_eV * 1e-6                   # MeV/nucleon
 
-        # Accumulator for F_e(E) per eV
+        # --- Accumulator for F_e(E) per eV ---
         F_e = np.zeros_like(E_e_mid_eV, dtype=float)
 
-        # Loop over projectile species (z from your Z_list)
+        # --- Precompute per-species kinematics and primary flux ---
+        species_data = []
         for sidx, zcharge in enumerate(self.Z_list):
-            # Primary flux density for this species (per eV)
-            Ep_mid_eV, dEp_eV, flux_z = self._primary_flux_per_species(sidx, e_edges) # s:eV/nuc ; r:{eV/nuc,eV/nuc ,(s*sr*m^2)^-1 }
+            # Primary flux density for this species (per eV/nucleon)
+            Ep_mid_eV, dEp_eV, flux_z = self._primary_flux_per_species(sidx, e_edges)
             # Kinematics for this species
-            M_MeV = self.m_list[sidx] * self.A_list[sidx] * 1e-6 # MeV 
-            Ep_mid_MeV = Ep_mid_eV * self.A_list[sidx] * 1e-6 # MeV
+            A = self.A_list[sidx]
+            M_MeV = self.m_list[sidx] * A * 1e-6          # MeV
+            Ep_mid_MeV = Ep_mid_eV * A * 1e-6            # MeV
 
-            # β_z(E'_z) and Wmax(E'_z)
-            beta_p = np.array([self.beta(Ep, M_MeV) for Ep in Ep_mid_MeV]) #unitless, Ep and M_MeV sent as MeV
+            # β_z(E'_z) and Wmax(E'_z) – can be vectorized if beta/_Wmax_primary accept arrays
+            beta_p = np.array([self.beta(Ep, M_MeV) for Ep in Ep_mid_MeV])     # unitless
             Wmax   = np.array([self._Wmax_primary(Ep, M_MeV) for Ep in Ep_mid_MeV])  # MeV
 
-            # Precompute logs safely
-            # We'll vectorize over electron energies E and sum over E'_z bins that satisfy Wmax >= E
-            for iE, Te in enumerate(E_e_mid_MeV): # MeV/nucleon , here electron energies so MeV
-                if Te <= 0.0:
-                    continue
+            species_data.append(
+                dict(
+                    zcharge=zcharge,
+                    A=A,
+                    M_MeV=M_MeV,
+                    Ep_mid_MeV=Ep_mid_MeV,
+                    beta_p=beta_p,
+                    Wmax=Wmax,
+                    flux_z=flux_z,
+                    dEp_eV=dEp_eV,
+                )
+            )
 
-                # Heaviside Θ(E′ - E_{z,min}(E))
-                Ezmin = self._Eproj_min_from_electron_E(Te, M_MeV)/self.A_list[sidx] # s:{MeV, MeV}; r: MeV, then MeV/nucleon
+        # --- Main loop: outer over electron energy Te, inner over species ---
+        for iE, Te in enumerate(E_e_mid_MeV):  # Te is electron kinetic energy [MeV]
+            if Te <= 0.0:
+                continue
 
-                # previous version
-                #mask  = Ep_mid_MeV >= Ezmin
+            # Te-dependent quantities (same for all species)
+            beta_e = np.sqrt(1.0 - (self.me / (Te + self.me))**2) #unitless
+            gamma_e = (Te + self.me) / self.me  # unitless, Te & me in MeV
+            lnLambda = self._lnLambda(Te)
+            correction = self._radiative_losses(13, gamma_e)  # Z_medium=13 for Al
 
-                # newer version
-                Ezmin = self._Eproj_min_from_electron_E(Te, M_MeV) / self.A_list[sidx]
-                mask  = (Ep_mid_MeV >= Ezmin) & (Wmax >= Te)
+            denom = lnLambda + correction
+            if denom <= 0.0:
+                continue
 
+            contrib_total = 0.0
 
+            # --- Sum contributions over species ---
+            for spec in species_data:
+                zcharge    = spec["zcharge"]
+                A          = spec["A"]
+                M_MeV      = spec["M_MeV"]
+                Ep_mid_MeV = spec["Ep_mid_MeV"]
+                beta_p     = spec["beta_p"]
+                Wmax       = spec["Wmax"]
+                flux_z     = spec["flux_z"]
+                dEp_eV     = spec["dEp_eV"]  # currently not used in contrib, mirroring your original
+
+                # Projectile minimum kinetic energy (per nucleon) that can produce Te
+                Ezmin = self._Eproj_min_from_electron_E(Te, M_MeV) / A  # MeV/nucleon
+
+                mask = (Ep_mid_MeV >= Ezmin) & (Wmax >= Te)
                 if not np.any(mask):
                     continue
 
-                Wm   = Wmax[mask] # MeV
-                bet  = beta_p[mask] # unitless
-                FZ_i = flux_z[mask] # (s*sr*m^2)^-1 
-                dEp  = dEp_eV[mask]  # eV
+                Wm   = Wmax[mask]       # MeV
+                bet  = beta_p[mask]     # unitless
+                FZ_i = flux_z[mask]     # (s·sr·m²·eV)^-1 in your current convention
+                # dEp_i = dEp_eV[mask]  # eV (include later if you want the full integral weight)
 
-                # Compute beta of the delta electrons at this E (Te)
-                beta_e = self.beta(Te, self.me) # send as {MeV, MeV} since Te for electrons is MeV
-                #beta_e = self.relative_velocity(Te*1e-3, self.me*1e-3)
-
-                # kernel with β_e² z² factor
+                # Kernel with β_e² z² factor
                 ratio = np.clip(Wm / Te, 1.0, None)
                 K = beta_e**2 * (zcharge**2) * (
-                    0.5 * (1.0/Te - 1.0/Wm) - ( (bet**2) / Wm ) * np.log(ratio)
-                ) # MeV^-1
+                    0.5 * (1.0 / Te - 1.0 / Wm)
+                    - (bet**2 / Wm) * np.log(ratio)
+                )  # MeV^-1
 
-                contrib = np.sum(FZ_i * K )  # (s*sr*m^2*MeV)^-1
-                lnLambda = self._lnLambda(Te)
-                if lnLambda > 0.0:
-                    F_e[iE] += contrib / lnLambda #(s*sr*m^2*MeV)^-1 
-                if zcharge == 26 and iE%4 == 0:
-                    print(f'Ez_min (MeV)={Ezmin},mask={mask},Wm (MeV) = {Wm}, bet = {bet}, FZ_i (s*st*m^2)^-1= {FZ_i}, beta_e={beta_e},K (MeV^-1)={K},contribution(s*st*m^2*MeV)^-1 ={contrib},F_e (s*st*m^2*MeV)^-1 ={F_e}')
-        
-    
-        # Make sure we never return a negative δ-electron flux
+                # Match your current units: no dEp multiplication here
+                contrib_species = np.sum(FZ_i * K)  # (s·sr·m²·MeV)^-1
+                contrib_total += contrib_species
+
+                if debug_prints and zcharge == 26 and iE % 50 == 0:
+                    print(
+                        f"[DEBUG] Te={Te:.3e} MeV, z={zcharge}, "
+                        f"Ezmin={Ezmin:.3e} MeV, n_bins={np.sum(mask)}, "
+                        f"contrib_species={contrib_species:.3e}"
+                    )
+
+            if contrib_total != 0.0:
+                F_e[iE] += contrib_total / denom  # (s·sr·m²·MeV)^-1
+
+        # --- Enforce non-negative flux ---
         F_e = np.asarray(F_e, dtype=float)
         F_e[F_e < 0] = 0.0
-        
-        #changing units for e_edges and E_e_mid_eV
-        e_edges = e_edges*self.A_list[self.species_index] # eV
-        E_e_mid_eV = E_e_mid_eV*self.A_list[self.species_index] # eV
 
+        # --- Convert electron energy bins from eV/nucleon to eV (using some reference species) ---
+        # You did this with self.species_index before; I’ll keep that logic.
+        A_ref = self.A_list[self.species_index]
+        e_edges    = e_edges    * A_ref  # eV
+        E_e_mid_eV = E_e_mid_eV * A_ref  # eV
 
-        #debug plots
-        plt.figure()
-        plt.loglog(E_e_mid_eV, F_e + 1e-40)  # avoid log(0)
-        plt.xlabel("Te (eV)")
-        plt.ylabel("Secondary e- flux per eV")
-        plt.show()
+        if debug_prints:
+            plt.figure()
+            plt.loglog(E_e_mid_eV, F_e + 1e-40)  # avoid log(0)
+            plt.xlabel("Te (eV)")
+            plt.ylabel("Secondary e- flux per eV")
+            plt.title("Secondary electron spectrum (debug)")
+            plt.show()
 
+        # Convert flux from per MeV to per eV
+        return e_edges, E_e_mid_eV, F_e * 1e-6  # (s·sr·m²·eV)^-1
 
-
-
-        return e_edges, E_e_mid_eV, F_e*1e-6  # units = {eV,eV,(s*st*m^2*eV)^-1} changed energy units from MeV to eV
 
 #END NEW DELTA RAY CODE
 
@@ -1959,11 +2034,12 @@ class CosmicRaySimulation:
                 kin_energy_bins_eV=kin_energy_bins, # eV/nuc
                 extend_low_electron_E=True,
                 E_e_min_eV=1e3  #1keV in eV
-            ) # units={eV,eV,(s*sr*m^2*eV)^-1} but here nucleon # = 1 because its electrons?
+            ) # units={eV,eV,(s*sr*m^2*eV)^-1} but here nucleon # = 1 because its electrons
+
             #debug prints
-            print_objects = [e_edges,e_centers,F_e]
-            for i in range(len(print_objects)):
-                print(print_objects[i])
+            #print_objects = [e_edges,e_centers,F_e]
+            #for i in range(len(print_objects)):
+            #    print(print_objects[i])
                 
             # Convert flux density [per eV] → expected counts (ΔE × Ω × Δt × A)
             dE_e = np.diff(e_edges) # eV
@@ -1972,9 +2048,10 @@ class CosmicRaySimulation:
             total_extra = np.sum(extra_means)
             
             #debug prints
-            print(f"Extra means per species:")
-            print(extra_means)
-            print(f"Total extra electrons: {total_extra}")
+            #print(f"Extra means per species:")
+            #print(extra_means)
+            #print(f"Total extra electrons: {total_extra}")
+
             # Baseline electron mean particle counts (from primaries)
             base = np.nan_to_num(num_part_table['Mean # of particles'].to_numpy(copy=True))
 
