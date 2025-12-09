@@ -1,12 +1,14 @@
 #gcrsim lvl1 pipeline interface test
 import numpy as np
-from .GCRsim_v02h import CosmicRaySimulation
-from .electron_spread2 import process_electrons_to_DN_by_blob
-from datetime import datetime
+from GCRsim_v02h import CosmicRaySimulation
+from electron_spread2 import process_electrons_to_DN_by_blob
+from datetime import datetime, timezone
+import time
+from fastforwardRNG import FastForwardRNG as ffRNG
 
 def generate_singleframe_cr(rng, nat_pix:int = 4088, date:float = 2026.790, dt:float = 3.04,
                             apply_padding: bool = False, settings_dict = None):
-    rng = rng #not sure what our plan was for this rng again?
+    rng = rng #now that we passed it in, what do we do with it again?
     
     #create sim object to run gcrs through the detector
     sim = CosmicRaySimulation(grid_size=nat_pix, date=date)
@@ -33,7 +35,18 @@ def generate_singleframe_cr(rng, nat_pix:int = 4088, date:float = 2026.790, dt:f
     return out_array
 
 def main():
-    rng = np.random.default_rng()
+    start_time = time.time()
+    utc_time = datetime.fromtimestamp(start_time, tz=timezone.utc)
+    print(f"Starting sim at {utc_time}")
+    rng = ffRNG(seed=2026)
     out_array_img = generate_singleframe_cr(rng)
+    end_time = time.time()
     print(f"Simulation complete. Array shape: {out_array_img.shape}")
-    return 0
+    print(f"Time to complete = {end_time - start_time} seconds")
+
+    
+# need to build RNG fast forward (FF) capability to be able to step to any particular RN in the series
+#also want to figure out how to call single frames of CRs using a call to the RNG
+
+if __name__ == "__main__":
+    main()
