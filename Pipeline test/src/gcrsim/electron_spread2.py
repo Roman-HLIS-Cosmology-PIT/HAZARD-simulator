@@ -89,7 +89,7 @@ def process_electrons_to_DN(
     gain_txt=None,
     n_pixels=4096,
     pixel_size_micron=10.0,
-    hi_res_grid_spacing_micron=1.0,
+    hi_res_grid_spacing_micron=2.0, #changed from 1.0 to 2.0 to see effect on timing
     chunksize=200_000,
     sigma_micron=3.14,
     N_sigma=6,
@@ -180,7 +180,7 @@ def process_pid_electrons_zoom(
     pid,
     delta_pids,
     sigma_micron=3.14,
-    hi_res_grid_spacing_micron=1.0,
+    hi_res_grid_spacing_micron=2.0,
     N_sigma=6
 ):
     """
@@ -229,7 +229,6 @@ def _downsample_and_add_patch(H_detector, patch, hi_x0, hi_y0, r):
     detector image H_detector at the correct location. Handles alignment, padding,
     and clipping to detector bounds.
     """
-    import numpy as np
     h, w = patch.shape
 
     # pad so the patch starts on an r-aligned boundary
@@ -258,14 +257,16 @@ def _downsample_and_add_patch(H_detector, patch, hi_x0, hi_y0, r):
     height = min(patch_ds.shape[0] - src_y0, Hh - dst_y0)
     if width <= 0 or height <= 0:
         return
+
     H_detector[dst_y0:dst_y0+height, dst_x0:dst_x0+width] += patch_ds[src_y0:src_y0+height, src_x0:src_x0+width]
+
 
 def process_electrons_to_DN_by_blob(
     csvfile,
     gain_txt=None,
     n_pixels=4096,
     pixel_size_micron=10.0,
-    hi_res_grid_spacing_micron=1.0,
+    hi_res_grid_spacing_micron=2.0,
     sigma_micron=3.14,
     N_sigma=6,
     output_array_path=None,
