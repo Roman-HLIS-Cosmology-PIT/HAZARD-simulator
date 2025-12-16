@@ -15,18 +15,18 @@ def generate_singleframe_cr(rng, nat_pix:int = 4088, date:float = 2026.790, dt:f
     _,_, trajectory_data, _ = sim.run_full_sim(grid_size=nat_pix, dt=dt, progress_bar=True, apply_padding = apply_padding)
     
     #extract the energy deposition and energy transfer data into a csv file
-    current_date = datetime.now()
-    computer_friendly_date = current_date.strftime("%Y%m%d%H%M")
-    file_name = computer_friendly_date+'_energy_loss.csv'
-    output_path = computer_friendly_date+'_outputArray.npy'
+    #current_date = datetime.now()
+    #computer_friendly_date = current_date.strftime("%Y%m%d%H%M")
+    #file_name = computer_friendly_date+'_energy_loss.csv'
+    #output_path = computer_friendly_date+'_outputArray.npy'
     
-    sim.build_energy_loss_csv(trajectory_data, file_name)
+    #sim.build_energy_loss_csv(trajectory_data, file_name)
     
     #send to electron_spread2.py for pixelation (requires having energy deposition csv)
     out_array = process_electrons_to_DN_by_blob(
-                    csvfile=file_name,
+                    csvfile=None,
+                    streaks=trajectory_data,
                     n_pixels = nat_pix,
-                    output_array_path=output_path,
                     apply_gain = False)
     
     #assuming no gain in electron_spread2(apply_gain = False)
@@ -37,11 +37,11 @@ def generate_singleframe_cr(rng, nat_pix:int = 4088, date:float = 2026.790, dt:f
 def main():
     start_time = time.time()
     utc_time = datetime.fromtimestamp(start_time, tz=timezone.utc)
-    print(f"Starting sim at {utc_time}")
+    print(f"Starting GCRsim at {utc_time}")
     rng = ffRNG(seed=2026)
     out_array_img = generate_singleframe_cr(rng)
     end_time = time.time()
-    print(f"Simulation complete. Array shape: {out_array_img.shape}")
+    print(f"Cosmic ray simulation complete. Array shape: {out_array_img.shape}")
     print(f"Time to complete = {end_time - start_time} seconds")
 
     
