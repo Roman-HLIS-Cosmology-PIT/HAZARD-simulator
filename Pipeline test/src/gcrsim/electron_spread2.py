@@ -6,7 +6,123 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from scipy.stats import nbinom
+from scipy.ndimage import gaussian_filter
 from concurrent.futures import ProcessPoolExecutor, as_completed
+
+#new functions to handle 'histogram electrons -> Gaussian blur -> downsample' routine:
+def _tile_worker_histblur(args):
+    (ty, tx,
+     tile_pixels, tile_h, tile_w,
+     n_pixels,
+     pixel_size_micron, hi_res_grid_spacing_micron,
+     sigma_micron, N_sigma,
+     x_um, y_um, dE_MeV,
+     tile_event_indices,
+     rng_state) = args
+
+    rng = _rng_from_state(rng_state)
+
+    r = int(round(pixel_size_micron / hi_res_grid_spacing_micron))
+    sigma_hi = sigma_micron / hi_res_grid_spacing_micron
+    pad_hi = int(np.ceil(N_sigma * sigma_hi))
+    pad_um = pad_hi * hi_res_grid_spacing_micron
+
+    # Detector tile bounds in microns
+    tile_um = tile_pixels * pixel_size_micron
+    x0_um = tx * tile_um
+    y0_um = ty * tile_um
+    x1_um = x0_um + tile_w * pixel_size_micron
+    y1_um = y0_um + tile_h * pixel_size_micron
+
+    # Expanded bounds (for blur support)
+    ex0_um = x0_um - pad_um
+    ey0_um = y0_um - pad_um
+    ex1_um = x1_um + pad_um
+    ey1_um = y1_um + pad_um
+
+    # Clip expanded bounds to detector physical extent
+    det_um = n_pixels * pixel_size_micron
+    ex0_um_c = max(0.0, ex0_um); ey0_um_c = max(0.0, ey0_um)
+    ex1_um_c = min(det_um, ex1_um); ey1_um_c = min(det_um, ey1_um)
+
+    if ex1_um_c <= ex0_um_c or ey1_um_c <= ey0_um_c:
+        return None
+
+    idx = tile_event_indices
+    if idx.size == 0:
+        return None
+
+    # Pull candidate events then exact-filter
+    xu = x_um[idx]
+    yu = y_um[idx]
+    dEsub = dE_MeV[idx]
+
+    m = (
+        (xu >= ex0_um_c) & (xu < ex1_um_c) &
+        (yu >= ey0_um_c) & (yu < ey1_um_c) &
+        np.isfinite(dEsub) & (dEsub > 0)
+    )
+    if not np.any(m):
+        return None
+
+    xu = xu[m]; yu = yu[m]; dEsub = dEsub[m]
+
+    # Hi-res impulse image size (expanded region)
+    w_hi = int(np.ceil((ex1_um_c - ex0_um_c) / hi_res_grid_spacing_micron))
+    h_hi = int(np.ceil((ey1_um_c - ey0_um_c) / hi_res_grid_spacing_micron))
+    w_hi = max(w_hi, 1); h_hi = max(h_hi, 1)
+
+    impulse = np.zeros((h_hi, w_hi), dtype=np.float32)
+
+    # Convert event positions to hi-res indices relative to expanded origin
+    x_idx = np.floor((xu - ex0_um_c) / hi_res_grid_spacing_micron).astype(np.int64)
+    y_idx = np.floor((yu - ey0_um_c) / hi_res_grid_spacing_micron).astype(np.int64)
+
+    x_idx = np.clip(x_idx, 0, w_hi - 1)
+    y_idx = np.clip(y_idx, 0, h_hi - 1)
+
+    # Sample electrons for this tile using this tile's RNG
+    n_e_int = electron_conversion_nb_array_gamma_poisson(
+        dEsub, rng=rng, fano_factor=2.71, w_eV=2.509
+    )
+    if np.all(n_e_int <= 0):
+        return None
+
+    # Histogram electrons into impulse image
+    np.add.at(impulse, (y_idx, x_idx), n_e_int.astype(np.float32, copy=False))
+
+    # Gaussian blur
+    blurred = gaussian_filter(impulse, sigma=sigma_hi, mode="constant", truncate=float(N_sigma))
+
+    # Crop blurred image down to tile region
+    cx0 = int(np.floor((x0_um - ex0_um_c) / hi_res_grid_spacing_micron))
+    cy0 = int(np.floor((y0_um - ey0_um_c) / hi_res_grid_spacing_micron))
+    cx1 = cx0 + tile_w * r
+    cy1 = cy0 + tile_h * r
+
+    cx0c = max(0, cx0); cy0c = max(0, cy0)
+    cx1c = min(w_hi, cx1); cy1c = min(h_hi, cy1)
+    if cx1c <= cx0c or cy1c <= cy0c:
+        return None
+
+    tile_hi = blurred[cy0c:cy1c, cx0c:cx1c]
+
+    # Pad to multiple of r for reshape
+    ph, pw = tile_hi.shape
+    pad_h = (-ph) % r
+    pad_w = (-pw) % r
+    if pad_h or pad_w:
+        tile_hi = np.pad(tile_hi, ((0, pad_h), (0, pad_w)), mode="constant")
+        ph, pw = tile_hi.shape
+
+    block = tile_hi.reshape(ph // r, r, pw // r, r).sum(axis=(1, 3)).astype(np.float32)
+
+    y0_det = ty * tile_pixels + max(0, (cy0c - cy0) // r)
+    x0_det = tx * tile_pixels + max(0, (cx0c - cx0) // r)
+
+    return (y0_det, x0_det, block)
+
+
 
 def electron_conversion(dE_MeV, fano_factor=2.71, w_eV=2.509):
     """
@@ -23,6 +139,60 @@ def electron_conversion(dE_MeV, fano_factor=2.71, w_eV=2.509):
     if r <= 0:
         return 0
     return nbinom(r, p).rvs()
+
+
+def electron_conversion_nb_array_gamma_poisson(
+    dE_MeV: np.ndarray,
+    rng: np.random.Generator,
+    fano_factor: float = 2.71,
+    w_eV: float = 2.509,
+) -> np.ndarray:
+    """
+    Vectorized equivalent of:
+        p = 1/fano_factor
+        mu_nb = dE_eV/w_eV
+        r = mu_nb * (p/(1-p))
+        return nbinom(r, p).rvs()
+
+    Uses Gamma–Poisson mixture (supports non-integer r efficiently):
+        lam ~ Gamma(shape=r, scale=(1-p)/p)
+        k   ~ Poisson(lam)
+
+    Returns int32 electrons (>=0).
+    """
+    dE = np.asarray(dE_MeV, dtype=np.float32)
+    out = np.zeros(dE.shape, dtype=np.int32)
+
+    p = np.float32(1.0 / fano_factor)
+    if not (0.0 < p < 1.0):
+        return out
+
+    m = (dE > 0) & np.isfinite(dE)
+    if not np.any(m):
+        return out
+
+    dE_eV = dE[m] * np.float32(1e6)
+    mu_nb = dE_eV / np.float32(w_eV)
+    r = mu_nb * (p / (1.0 - p))
+
+    good = r > 0
+    if not np.any(good):
+        return out
+
+    scale = np.float32((1.0 - p) / p)
+    lam = rng.gamma(shape=r[good], scale=scale)
+    k = rng.poisson(lam=lam).astype(np.int32, copy=False)
+
+    tmp = np.zeros_like(r, dtype=np.int32)
+    tmp[good] = k
+    out[m] = tmp
+    return out
+
+def _rng_from_state(rng_state: dict) -> np.random.Generator:
+    bitgen = np.random.PCG64()
+    bitgen.state = rng_state
+    return np.random.Generator(bitgen)
+
 
 def kernel_size_from_sigma(sigma_um, grid_spacing_um, N_sigma=6):
     """Odd integer kernel size to cover ±N_sigma*sigma."""
@@ -491,7 +661,7 @@ def process_electrons_to_DN_by_blob(
             for chunk in chunks
         ]
 
-        for fut in tqdm(as_completed(futures), total=len(futures), desc="Processing primary GCRs (parallel)"):
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="Processing primary GCRs in parallel"):
             blocks = fut.result()
             for y0, x0, block in blocks:
                 h, w = block.shape
@@ -516,6 +686,180 @@ def process_electrons_to_DN_by_blob(
         np.save(output_array_path, H_detector_DN)
         print(f"Saved DN array to {output_array_path}")
     return H_detector_DN
+
+#new processing function
+def process_electrons_to_DN_by_blob2(
+    rng_ff=None,
+    csvfile=None,
+    streaks=None,
+    gain_txt=None,
+    n_pixels=4096,
+    pixel_size_micron=10.0,
+    hi_res_grid_spacing_micron=2.0,
+    sigma_micron=3.14,
+    N_sigma=6,
+    tile_pixels=256,
+    n_workers=None,
+    chunk_tiles=16,  # submit tiles in batches to reduce overhead
+    apply_gain=True,
+    output_array_path=None,
+):
+    # --- Load events (same logic you already added) ---
+    if csvfile is not None:
+        df = pd.read_csv(
+            csvfile,
+            usecols=["x", "y", "dE", "PID"],
+            dtype={"x": np.float32, "y": np.float32, "dE": np.float32, "PID": np.int64},
+        )
+    else:
+        if streaks is None:
+            raise ValueError("csvfile is None, so you must pass streaks=<streaks_list>.")
+        df = _events_df_from_streaks(streaks)
+
+    # Vectorized electron conversion (fast): compute n_e once
+    # Replace this with your existing electron_conversion formula if needed.
+    dE = df["dE"].to_numpy(np.float32)
+    x_um = df["x"].to_numpy(np.float32)
+    y_um = df["y"].to_numpy(np.float32)
+
+    # rng should be a numpy.random.Generator passed into your pipeline for determinism
+    # Cheap filter: only keep physically valid deposits; stochastic sampling happens per-tile in the worker
+    keep = np.isfinite(dE) & (dE > 0)
+    dE = dE[keep]
+    x_um = x_um[keep]
+    y_um = y_um[keep]
+
+
+    # --- Tiling setup ---
+    # Allow partial edge tiles (e.g. 4088 with tile 256)
+    n_tiles = int(np.ceil(n_pixels / tile_pixels))
+    tile_um = tile_pixels * pixel_size_micron
+
+
+    # Pre-bin events into tile buckets (fast lookup per tile)
+    tx_evt = np.floor(x_um / tile_um).astype(np.int32)
+    ty_evt = np.floor(y_um / tile_um).astype(np.int32)
+    tx_evt = np.clip(tx_evt, 0, n_tiles - 1)
+    ty_evt = np.clip(ty_evt, 0, n_tiles - 1)
+
+    buckets = {}
+    for i in range(x_um.size):
+        key = (int(ty_evt[i]), int(tx_evt[i]))
+        buckets.setdefault(key, []).append(i)
+
+
+    # Determine neighbor radius in tiles for padding reach
+    r = int(round(pixel_size_micron / hi_res_grid_spacing_micron))
+    sigma_hi = sigma_micron / hi_res_grid_spacing_micron
+    pad_hi = int(np.ceil(N_sigma * sigma_hi))
+    pad_um = pad_hi * hi_res_grid_spacing_micron
+    neigh = int(np.ceil(pad_um / tile_um))
+
+    # Tiles that contain at least one event
+    occupied = set(zip(ty_evt.tolist(), tx_evt.tolist()))
+
+    # Tiles we will actually process: occupied tiles + neighbor halo for blur support
+    tiles_to_process = set()
+    for (ty, tx) in occupied:
+        for nny in range(max(0, ty - neigh), min(n_tiles, ty + neigh + 1)):
+            for nnx in range(max(0, tx - neigh), min(n_tiles, tx + neigh + 1)):
+                tiles_to_process.add((nny, nnx))
+
+
+    if n_workers is None:
+        n_workers = max(1, (os.cpu_count() or 1) - 1)
+
+    H_detector = np.zeros((n_pixels, n_pixels), dtype=np.float32)
+        
+    jobs = []
+
+    # Iterate only the relevant tiles
+    for (ty, tx) in sorted(tiles_to_process):
+
+        # --- actual tile size (handles edge tiles if you implemented that earlier) ---
+        y0 = ty * tile_pixels
+        x0 = tx * tile_pixels
+        tile_h = min(tile_pixels, n_pixels - y0)
+        tile_w = min(tile_pixels, n_pixels - x0)
+        if tile_h <= 0 or tile_w <= 0:
+            continue
+
+        # --- union of bucket indices from neighboring tiles (coarse candidate set) ---
+        idx_list = []
+        for nny in range(max(0, ty - neigh), min(n_tiles, ty + neigh + 1)):
+            for nnx in range(max(0, tx - neigh), min(n_tiles, tx + neigh + 1)):
+                idx_list.extend(buckets.get((nny, nnx), []))
+
+        if not idx_list:
+            # This tile is in halo set but has no nearby candidate events -> skip job
+            continue
+
+        idx_arr = np.asarray(idx_list, dtype=np.int64)
+
+        jobs.append((
+            ty, tx,
+            tile_pixels, tile_h, tile_w,
+            n_pixels,
+            pixel_size_micron, hi_res_grid_spacing_micron,
+            sigma_micron, N_sigma,
+            x_um, y_um, dE,
+            idx_arr
+        ))
+
+    if rng_ff is None:
+        raise ValueError("Option-2 RNG requires rng_ff=FastForwardRNG(...) to be passed in.")
+
+    # IMPORTANT: stable order so each tile gets a deterministic stream assignment
+    # If jobs is a list of tuples that include (ty, tx) early, sort by those:
+    jobs.sort(key=lambda j: (j[0], j[1]))  # assumes (ty, tx, ...) are first
+
+    tile_rngs = rng_ff.spawn_generators_by_jump(len(jobs))  # you already added this method
+    tile_rng_states = [g.bit_generator.state for g in tile_rngs]  # pickle-friendly
+
+    # Attach one RNG state per job
+    jobs = [(*job, tile_rng_states[i]) for i, job in enumerate(jobs)]
+
+
+    # Submit in batches so we don’t create thousands of futures at once
+    def batched(it, n):
+        for i in range(0, len(it), n):
+            yield it[i:i+n]
+
+    with ProcessPoolExecutor(max_workers=n_workers) as ex:
+        for batch in tqdm(list(batched(jobs, chunk_tiles)), desc=f"Submitting {len(jobs)} tile jobs"):
+            futs = [ex.submit(_tile_worker_histblur, j) for j in batch]
+            for fut in as_completed(futs):
+                out = fut.result()
+                if out is None:
+                    continue
+                y0, x0, block = out
+                h, w = block.shape
+                # Clip just in case edge pads produce slightly off sizes
+                H_detector[y0:y0+h, x0:x0+w] += block
+
+    # --- Gain + save (same as your existing path) ---
+    if not apply_gain:
+        if output_array_path:
+            np.save(output_array_path, H_detector)
+        return H_detector
+
+    if gain_txt is None:
+        raise ValueError("gain_txt must be provided when apply_gain=True.")
+
+    gain_array = np.loadtxt(gain_txt)[:, 5].reshape((32, 32))
+    supercell_size = n_pixels // 32
+    gain_map = np.kron(gain_array, np.ones((supercell_size, supercell_size), dtype=np.float32))
+    gain_map_safe = np.where(gain_map > 0, gain_map, np.nan).astype(np.float32)
+
+    H_detector_DN = H_detector / gain_map_safe
+    if output_array_path:
+        np.save(output_array_path, H_detector_DN)
+
+    #debug print
+    print(f"Occupied tiles: {len(occupied)} | Tiles processed (with halo): {len(tiles_to_process)} | Jobs submitted: {len(jobs)}")
+    return H_detector_DN
+
+
 
 
 # -------- CLI --------
