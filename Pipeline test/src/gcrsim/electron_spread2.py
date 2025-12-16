@@ -261,8 +261,77 @@ def _downsample_and_add_patch(H_detector, patch, hi_x0, hi_y0, r):
     H_detector[dst_y0:dst_y0+height, dst_x0:dst_x0+width] += patch_ds[src_y0:src_y0+height, src_x0:src_x0+width]
 
 
+
+def _flatten_streaks(streaks):
+    """
+    Accept either:
+      - flat list of streak tuples, or
+      - nested [species][bin][streak] structure (as saved/loaded by GCRsim)
+    and yield streak tuples.
+    """
+    if streaks is None:
+        return
+    # Heuristic: nested if first element is list-like and not a streak tuple
+    if isinstance(streaks, list) and streaks and isinstance(streaks[0], list):
+        for species in streaks:
+            for bin_streaks in species:
+                for st in bin_streaks:
+                    yield st
+    else:
+        for st in streaks:
+            yield st
+
+
+def _events_df_from_streaks(streaks, dtype_xy=np.float32, dtype_dE=np.float32):
+    """
+    Convert streak tuples into an events DataFrame with columns: x, y, dE, PID
+
+    Notes:
+      - positions are stored in microns in GCRsim (x0/y0 built in um and appended). :contentReference[oaicite:2]{index=2}
+      - energy_changes for primaries is stored as (dE, T_delta) so we take the first element.
+    """
+    xs, ys, dEs, pids = [], [], [], []
+
+    for st in _flatten_streaks(streaks):
+        # streak layout in GCRsim_v02ht save/load:
+        # (positions, pid, ..., energy_changes, global_steps, ...)
+        positions = st[0]
+        pid = st[1]
+        energy_changes = st[10]
+
+        n = min(len(positions), len(energy_changes))
+        if n <= 0:
+            continue
+
+        for i in range(n):
+            x_um, y_um, _z_um = positions[i]
+
+            ec = energy_changes[i]
+            # ec may be a scalar or tuple/list; primaries store (dE, T_delta)
+            if isinstance(ec, (tuple, list, np.ndarray)):
+                dE = float(ec[0]) if len(ec) > 0 else 0.0
+            else:
+                dE = float(ec)
+
+            xs.append(x_um)
+            ys.append(y_um)
+            dEs.append(dE)
+            pids.append(pid)
+
+    if not xs:
+        raise ValueError("No events found in streaks (empty or mismatched positions/energy_changes).")
+
+    return pd.DataFrame({
+        "x": np.asarray(xs, dtype=dtype_xy),
+        "y": np.asarray(ys, dtype=dtype_xy),
+        "dE": np.asarray(dEs, dtype=dtype_dE),
+        "PID": np.asarray(pids, dtype=np.int64),
+    })
+
+
 def process_electrons_to_DN_by_blob(
-    csvfile,
+    csvfile=None,
+    streaks=None,
     gain_txt=None,
     n_pixels=4096,
     pixel_size_micron=10.0,
@@ -271,7 +340,6 @@ def process_electrons_to_DN_by_blob(
     N_sigma=6,
     output_array_path=None,
     apply_gain=True,
-    # optional memory saver: use float32 for the detector grid
     detector_dtype=np.float32,
 ):
     """
@@ -293,14 +361,20 @@ def process_electrons_to_DN_by_blob(
     kernel_size_hi = kernel_size_from_sigma(sigma_micron, hi_res_grid_spacing_micron, N_sigma)
     kernel = gaussian_sum_kernel(kernel_size_hi, sigma_micron, hi_res_grid_spacing_micron)
 
-    # Read only needed columns, lighter dtypes
-    df = pd.read_csv(
-        csvfile,
-        usecols=["x", "y", "dE", "PID"],
-        dtype={"x": np.float32, "y": np.float32, "dE": np.float32, "PID": np.int64},
-    )
-    if 'PID' not in df.columns:
-        raise ValueError("CSV must have a 'PID' column for grouping.")
+    # --- Get event table either from CSV or from in-memory streaks ---
+    if csvfile is not None:
+        df = pd.read_csv(
+            csvfile,
+            usecols=["x", "y", "dE", "PID"],
+            dtype={"x": np.float32, "y": np.float32, "dE": np.float32, "PID": np.int64}, # Read only needed columns, lighter dtypes
+        )
+        if "PID" not in df.columns:
+            raise ValueError("CSV must have a 'PID' column for grouping.")
+    else:
+        if streaks is None:
+            raise ValueError("csvfile is None, so you must pass streaks=<streaks_list>.")
+        df = _events_df_from_streaks(streaks)
+
 
     det_size_um = n_pixels * pixel_size_micron  # for clipping sanity
 
