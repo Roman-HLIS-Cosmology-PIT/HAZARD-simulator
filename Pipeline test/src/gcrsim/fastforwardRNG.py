@@ -1,4 +1,5 @@
 #FFRNG
+import copy
 import numpy as np
 
 class FastForwardRNG:
@@ -58,3 +59,18 @@ class FastForwardRNG:
         """
         delta = target_position - self.position
         self.advance(delta)
+
+    def spawn_generators_by_jump(self, n_streams: int):
+        """
+        Create n_streams independent numpy Generators using PCG64.jump().
+        Each stream is separated by 2**128 steps (very strong separation).
+        """
+        gens = []
+        # copy the bitgen state so we don't mutate the parent stream
+        bitgen = np.random.PCG64()
+        bitgen.state = copy.deepcopy(self.bitgen.state)
+
+        for _ in range(n_streams):
+            gens.append(np.random.Generator(bitgen))
+            bitgen = bitgen.jumped()  # new independent stream
+        return gens
