@@ -1,9 +1,12 @@
 # electron_spread.py
 
+import os
+import argparse
 import numpy as np
 import pandas as pd
-from scipy.stats import nbinom
 from tqdm import tqdm
+from scipy.stats import nbinom
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 def electron_conversion(dE_MeV, fano_factor=2.71, w_eV=2.509):
     """
@@ -223,6 +226,7 @@ def process_pid_electrons_zoom(
     y_coords_um = y0_um + np.arange(n_pix_y) * hi_res_grid_spacing_micron
     return patch, x_coords_um, y_coords_um
 
+
 def _downsample_and_add_patch(H_detector, patch, hi_x0, hi_y0, r):
     """
     Downsample a hi-res patch by block-summing (factor r) and add it into the
@@ -260,6 +264,98 @@ def _downsample_and_add_patch(H_detector, patch, hi_x0, hi_y0, r):
 
     H_detector[dst_y0:dst_y0+height, dst_x0:dst_x0+width] += patch_ds[src_y0:src_y0+height, src_x0:src_x0+width]
 
+
+# new parallel version of above function
+def _downsample_patch_to_block(patch, hi_x0, hi_y0, r, det_shape):
+    """
+    Downsample hi-res patch by factor r and return a clipped (y0, x0, block) suitable
+    for adding into H_detector. Returns None if it lands entirely off-detector.
+    """
+    h, w = patch.shape
+
+    # pad so the patch starts on an r-aligned boundary (same logic as before)
+    pad_left   = hi_x0 % r
+    pad_top    = hi_y0 % r
+    pad_right  = (-(pad_left + w)) % r
+    pad_bottom = (-(pad_top  + h)) % r
+
+    if pad_top or pad_bottom or pad_left or pad_right:
+        patch = np.pad(patch, ((pad_top, pad_bottom), (pad_left, pad_right)), mode="constant")
+
+    ph, pw = patch.shape
+    patch_ds = patch.reshape(ph // r, r, pw // r, r).sum(axis=(1, 3))
+
+    det_x0 = (hi_x0 - pad_left) // r
+    det_y0 = (hi_y0 - pad_top)  // r
+
+    Hh, Hw = det_shape
+
+    # clip to detector bounds
+    src_x0 = max(0, -det_x0); dst_x0 = max(0, det_x0)
+    src_y0 = max(0, -det_y0); dst_y0 = max(0, det_y0)
+    width  = min(patch_ds.shape[1] - src_x0, Hw - dst_x0)
+    height = min(patch_ds.shape[0] - src_y0, Hh - dst_y0)
+    if width <= 0 or height <= 0:
+        return None
+
+    block = patch_ds[src_y0:src_y0+height, src_x0:src_x0+width]
+    return dst_y0, dst_x0, block
+
+#new worker function that process a chunk of PIDs
+def _process_pid_chunk(pid_chunk_items, kernel, kernel_size_hi, r,
+                       hi_res_grid_spacing_micron, sigma_micron, N_sigma,
+                       n_pixels, pixel_size_micron):
+    """
+    pid_chunk_items: list of (pid, xs_um, ys_um, dEs_MeV) arrays
+    Returns: list of (dst_y0, dst_x0, block_array)
+    """
+    det_shape = (n_pixels, n_pixels)
+    det_size_um = n_pixels * pixel_size_micron
+    expand = N_sigma * sigma_micron
+
+    out_blocks = []
+
+    for pid, xs_um, ys_um, dEs_MeV in pid_chunk_items:
+        if len(xs_um) == 0:
+            continue
+
+        # bounding box in microns + expand
+        x_min = float(np.min(xs_um)); x_max = float(np.max(xs_um))
+        y_min = float(np.min(ys_um)); y_max = float(np.max(ys_um))
+
+        patch_x0_um = x_min - expand
+        patch_x1_um = x_max + expand
+        patch_y0_um = y_min - expand
+        patch_y1_um = y_max + expand
+
+        # optional: quick reject if fully off detector
+        if (patch_x1_um < 0) or (patch_y1_um < 0) or (patch_x0_um > det_size_um) or (patch_y0_um > det_size_um):
+            continue
+
+        patch_w = int(np.ceil((patch_x1_um - patch_x0_um) / hi_res_grid_spacing_micron))
+        patch_h = int(np.ceil((patch_y1_um - patch_y0_um) / hi_res_grid_spacing_micron))
+        patch_w = max(patch_w, kernel_size_hi)
+        patch_h = max(patch_h, kernel_size_hi)
+
+        patch = np.zeros((patch_h, patch_w), dtype=np.float32)
+
+        # stamp each event into the patch (same inner loop you already have) :contentReference[oaicite:2]{index=2}
+        for x_um, y_um, dE in zip(xs_um, ys_um, dEs_MeV):
+            n_electrons = electron_conversion(float(dE))
+            if n_electrons <= 0:
+                continue
+            x_idx = int(np.floor((float(x_um) - patch_x0_um) / hi_res_grid_spacing_micron))
+            y_idx = int(np.floor((float(y_um) - patch_y0_um) / hi_res_grid_spacing_micron))
+            spread_electrons_to_patch(patch, x_idx, y_idx, n_electrons, kernel)
+
+        hi_x0 = int(np.floor(patch_x0_um / hi_res_grid_spacing_micron))
+        hi_y0 = int(np.floor(patch_y0_um / hi_res_grid_spacing_micron))
+
+        blk = _downsample_patch_to_block(patch, hi_x0, hi_y0, r, det_shape)
+        if blk is not None:
+            out_blocks.append(blk)
+
+    return out_blocks
 
 
 def _flatten_streaks(streaks):
@@ -328,7 +424,6 @@ def _events_df_from_streaks(streaks, dtype_xy=np.float32, dtype_dE=np.float32):
         "PID": np.asarray(pids, dtype=np.int64),
     })
 
-
 def process_electrons_to_DN_by_blob(
     csvfile=None,
     streaks=None,
@@ -341,32 +436,25 @@ def process_electrons_to_DN_by_blob(
     output_array_path=None,
     apply_gain=True,
     detector_dtype=np.float32,
+    n_workers=None,
+    chunk_size=64,
 ):
-    """
-    Memory-safe 'blob' processing:
-      * Build a hi-res patch per PID
-      * Immediately downsample that patch to detector pixels
-      * Accumulate into a single n_pixels×n_pixels image (no global hi-res array)
-    """
-
     # downsample factor (must be integer)
     r = int(round(pixel_size_micron / hi_res_grid_spacing_micron))
     if not np.isclose(r * hi_res_grid_spacing_micron, pixel_size_micron, atol=1e-6):
         raise ValueError("Detector pixel size must be divisible by hi-res grid spacing.")
 
-    # Allocate detector image only (~64MB as float32 for 4088x4088)
     H_detector = np.zeros((n_pixels, n_pixels), dtype=detector_dtype)
 
-    # Kernel on hi-res grid
     kernel_size_hi = kernel_size_from_sigma(sigma_micron, hi_res_grid_spacing_micron, N_sigma)
     kernel = gaussian_sum_kernel(kernel_size_hi, sigma_micron, hi_res_grid_spacing_micron)
 
-    # --- Get event table either from CSV or from in-memory streaks ---
+    # --- Get df from CSV or streaks (your earlier change) ---
     if csvfile is not None:
         df = pd.read_csv(
             csvfile,
             usecols=["x", "y", "dE", "PID"],
-            dtype={"x": np.float32, "y": np.float32, "dE": np.float32, "PID": np.int64}, # Read only needed columns, lighter dtypes
+            dtype={"x": np.float32, "y": np.float32, "dE": np.float32, "PID": np.int64},
         )
         if "PID" not in df.columns:
             raise ValueError("CSV must have a 'PID' column for grouping.")
@@ -375,62 +463,47 @@ def process_electrons_to_DN_by_blob(
             raise ValueError("csvfile is None, so you must pass streaks=<streaks_list>.")
         df = _events_df_from_streaks(streaks)
 
+    # --- build PID items for workers ---
+    pid_items = []
+    for pid, group in df.groupby("PID"):  # your current serial loop is here :contentReference[oaicite:3]{index=3}
+        pid_items.append((
+            int(pid),
+            group["x"].to_numpy(),
+            group["y"].to_numpy(),
+            group["dE"].to_numpy(),
+        ))
 
-    det_size_um = n_pixels * pixel_size_micron  # for clipping sanity
+    if n_workers is None:
+        n_workers = max(1, (os.cpu_count() or 1) - 1)
 
-    for pid, group in tqdm(df.groupby('PID'), desc="Processing primary GCRs"):
-        xs_um = group['x'].to_numpy()
-        ys_um = group['y'].to_numpy()
-        dEs_MeV = group['dE'].to_numpy()
+    # chunk PIDs to reduce overhead
+    chunks = [pid_items[i:i+chunk_size] for i in range(0, len(pid_items), chunk_size)]
 
-        # physical patch bounds (+Nσ) on hi-res grid
-        x_min, x_max = float(xs_um.min()), float(xs_um.max())
-        y_min, y_max = float(ys_um.min()), float(ys_um.max())
-        expand = N_sigma * sigma_micron
-        patch_x0_um = x_min - expand
-        patch_x1_um = x_max + expand
-        patch_y0_um = y_min - expand
-        patch_y1_um = y_max + expand
+    # --- parallel map: workers return blocks; parent accumulates => no collisions ---
+    with ProcessPoolExecutor(max_workers=n_workers) as ex:
+        futures = [
+            ex.submit(
+                _process_pid_chunk,
+                chunk, kernel, kernel_size_hi, r,
+                hi_res_grid_spacing_micron, sigma_micron, N_sigma,
+                n_pixels, pixel_size_micron
+            )
+            for chunk in chunks
+        ]
 
-        # clip physical patch to detector extent to avoid giant pads when near borders
-        patch_x0_um = max(patch_x0_um, 0.0)
-        patch_y0_um = max(patch_y0_um, 0.0)
-        patch_x1_um = min(patch_x1_um, det_size_um)
-        patch_y1_um = min(patch_y1_um, det_size_um)
-        if patch_x1_um <= patch_x0_um or patch_y1_um <= patch_y0_um:
-            continue
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="Processing primary GCRs (parallel)"):
+            blocks = fut.result()
+            for y0, x0, block in blocks:
+                h, w = block.shape
+                H_detector[y0:y0+h, x0:x0+w] += block
 
-        # hi-res index-space for the patch
-        patch_w = int(np.ceil((patch_x1_um - patch_x0_um) / hi_res_grid_spacing_micron))
-        patch_h = int(np.ceil((patch_y1_um - patch_y0_um) / hi_res_grid_spacing_micron))
-        patch_w = max(patch_w, kernel_size_hi)
-        patch_h = max(patch_h, kernel_size_hi)
-
-        patch = np.zeros((patch_h, patch_w), dtype=np.float32)
-
-        # stamp each event into the patch
-        for x_um, y_um, dE in zip(xs_um, ys_um, dEs_MeV):
-            n_electrons = electron_conversion(float(dE))
-            if n_electrons <= 0:
-                continue
-            x_idx = int(np.floor((float(x_um) - patch_x0_um) / hi_res_grid_spacing_micron))
-            y_idx = int(np.floor((float(y_um) - patch_y0_um) / hi_res_grid_spacing_micron))
-            spread_electrons_to_patch(patch, x_idx, y_idx, n_electrons, kernel)
-
-        # top-left hi-res indices where this patch lands in the full hi-res frame
-        hi_x0 = int(np.floor(patch_x0_um / hi_res_grid_spacing_micron))
-        hi_y0 = int(np.floor(patch_y0_um / hi_res_grid_spacing_micron))
-
-        # downsample and add into detector
-        _downsample_and_add_patch(H_detector, patch, hi_x0, hi_y0, r)
-
+    # --- rest of your function unchanged (gain + save) ---
     if not apply_gain:
         if output_array_path:
             np.save(output_array_path, H_detector)
             print(f"Saved electrons-per-pixel array to {output_array_path}")
         return H_detector
 
-    # Apply gain (e-/DN)
     if gain_txt is None:
         raise ValueError("gain_txt must be provided when apply_gain=True.")
     gain_array = np.loadtxt(gain_txt)[:, 5].reshape((32, 32))
@@ -442,12 +515,11 @@ def process_electrons_to_DN_by_blob(
     if output_array_path:
         np.save(output_array_path, H_detector_DN)
         print(f"Saved DN array to {output_array_path}")
-
     return H_detector_DN
+
 
 # -------- CLI --------
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser(
         description="Spread electrons and optionally convert to DN from cosmic ray sim CSV."
     )
