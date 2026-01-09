@@ -3,9 +3,10 @@ import time
 from datetime import UTC, datetime
 
 import numpy as np
-from electron_spread2 import process_electrons_to_DN_by_blob2
-from ffrng import FastForwardRNG as ffRNG
-from gcrsim import CosmicRaySimulation
+
+from .electron_spread2 import process_electrons_to_DN_by_blob2
+from .ffrng import FastForwardRNG as ffRNG
+from .gcrsim import CosmicRaySimulation
 
 
 def generate_singleframe_cr(
