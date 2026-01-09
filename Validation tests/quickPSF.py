@@ -1,12 +1,16 @@
 # point_source_ramp.py
 from __future__ import annotations
-from matplotlib.patches import Circle
-import numpy as np
-from scipy.ndimage import shift as nd_shift  # optional subpixel shift
-import matplotlib.pyplot as plt
-from dataclasses import dataclass, asdict
-from typing import Iterable, List, Tuple, Dict, Optional, Literal
+
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass
 from math import isfinite
+from typing import Literal, Optional
+
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.patches import Circle
+from scipy.ndimage import shift as nd_shift  # optional subpixel shift
+
 
 # -----------------------------
 # Data structures
@@ -33,6 +37,7 @@ class PointSource:
     start_frame : int, optional
         Frame index at which the source starts ramping (0-based). Before this, contributes 0.
     """
+
     x: float
     y: float
     rate_dn_per_frame: float
@@ -45,9 +50,9 @@ class PointSource:
 # PSF & rendering utilities
 # -----------------------------
 def gaussian_psf_kernel(
-    shape: Tuple[int,int],
+    shape: tuple[int, int],
     fwhm_px: float,
-    center: Tuple[float, float],
+    center: tuple[float, float],
 ) -> np.ndarray:
     """
     Build a normalized Gaussian PSF kernel on a size×size grid, centered at a sub-pixel position.
@@ -58,11 +63,11 @@ def gaussian_psf_kernel(
     - Kernel sums to 1. You can multiply by total DN for that frame to distribute across pixels.
     """
     ny, nx = shape
-    sigma = fwhm_px / (2.0*np.sqrt(2.0*np.log(2.0)) + 1e-12)
+    sigma = fwhm_px / (2.0 * np.sqrt(2.0 * np.log(2.0)) + 1e-12)
     yy, xx = np.mgrid[0:ny, 0:nx]
     dx = xx - center[0]
     dy = yy - center[1]
-    ker = np.exp(-0.5 * (dx*dx + dy*dy) / (sigma*sigma + 1e-20))
+    ker = np.exp(-0.5 * (dx * dx + dy * dy) / (sigma * sigma + 1e-20))
     s = ker.sum()
     if s > 0:
         ker /= s
@@ -82,14 +87,14 @@ def circular_aperture_sum(img: np.ndarray, cx: float, cy: float, r: float) -> fl
 # -----------------------------
 def simulate_point_source_ramp(
     sources: Iterable[PointSource],
-    grid_size: Tuple[int, int] = (4, 4),
+    grid_size: tuple[int, int] = (4, 4),
     n_frames: int = 20,
     read_noise_sigma_dn: float = 1.5,
     background_dn_per_frame: float = 0.0,
     background_jitter_frac: float = 0.0,
     saturation_dn: Optional[float] = None,
     seed: Optional[int] = 1234,
-) -> Dict[str, np.ndarray]:
+) -> dict[str, np.ndarray]:
     """
     Simulate an up-the-ramp sequence with injected Gaussian-PSF point sources.
 
@@ -146,7 +151,7 @@ def simulate_point_source_ramp(
         frame_increment = np.full((ny, nx), bg_rate, dtype=np.float64)
 
         # Add sources' frame increments
-        for psf, s in zip(src_psfs, sources):
+        for psf, s in zip(src_psfs, sources, strict=False):
             if t >= s.start_frame:
                 # Per-frame rate with jitter
                 rate_t = s.rate_dn_per_frame * (1.0 + s.jitter_frac * rng.normal())
@@ -178,7 +183,7 @@ def simulate_point_source_ramp(
 # -----------------------------
 def plot_pixel_timeseries(
     cube: np.ndarray,
-    coords: List[Tuple[int, int]],
+    coords: list[tuple[int, int]],
     title: str = "Per-pixel Up-the-Ramp Signals",
 ) -> None:
     """
@@ -186,9 +191,9 @@ def plot_pixel_timeseries(
     """
     n_frames = cube.shape[0]
     t = np.arange(n_frames)
-    plt.figure(figsize=(7,5))
-    for (y, x) in coords:
-        plt.plot(t, cube[:, y, x], marker='o', lw=1, ms=3, label=f"px ({y},{x})")
+    plt.figure(figsize=(7, 5))
+    for y, x in coords:
+        plt.plot(t, cube[:, y, x], marker="o", lw=1, ms=3, label=f"px ({y},{x})")
     plt.xlabel("Frame")
     plt.ylabel("DN")
     plt.title(title)
@@ -199,7 +204,7 @@ def plot_pixel_timeseries(
 
 def plot_aperture_timeseries(
     cube: np.ndarray,
-    centers: List[Tuple[float, float]],
+    centers: list[tuple[float, float]],
     radius_px: float = 1.25,
     title: str = "Aperture-summed Up-the-Ramp Signals",
 ) -> None:
@@ -208,10 +213,10 @@ def plot_aperture_timeseries(
     """
     n_frames, ny, nx = cube.shape
     t = np.arange(n_frames)
-    plt.figure(figsize=(7,5))
-    for (cx, cy) in centers:
+    plt.figure(figsize=(7, 5))
+    for cx, cy in centers:
         vals = np.array([circular_aperture_sum(cube[i], cx, cy, radius_px) for i in range(n_frames)])
-        plt.plot(t, vals, marker='o', lw=1, ms=3, label=f"ap (cx={cx:.2f}, cy={cy:.2f}, r={radius_px})")
+        plt.plot(t, vals, marker="o", lw=1, ms=3, label=f"ap (cx={cx:.2f}, cy={cy:.2f}, r={radius_px})")
     plt.xlabel("Frame")
     plt.ylabel("DN (aperture sum)")
     plt.title(title)
@@ -222,7 +227,7 @@ def plot_aperture_timeseries(
 
 def plot_final_frame_with_apertures(
     cube: np.ndarray,
-    centers: List[Tuple[float, float]],
+    centers: list[tuple[float, float]],
     radius_px: float = 1.25,
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
@@ -254,7 +259,7 @@ def plot_final_frame_with_apertures(
     im = ax.imshow(img, origin="upper", interpolation="nearest", cmap=cmap, vmin=vmin, vmax=vmax)
     plt.colorbar(im, ax=ax, label="DN")
 
-    for (cx, cy) in centers:
+    for cx, cy in centers:
         ax.add_patch(Circle((cx, cy), radius_px, fill=False, lw=2.0, ec="red"))
         ax.plot(cx, cy, marker="x", ms=6, mec="red", mfc="none", mew=1.5)
         if annotate:
@@ -271,18 +276,18 @@ def plot_final_frame_with_apertures(
 
 
 # --- BRIDGE: from your widget selection to injection into the PSF sim ----
-from typing import Dict
+
 
 def inject_patch(
-    sim: Dict[str, np.ndarray],
+    sim: dict[str, np.ndarray],
     blob_patch: np.ndarray,
     target_frame: int,
-    insert_center_yx: Tuple[float, float],
+    insert_center_yx: tuple[float, float],
     op: Literal["add", "replace"] = "add",
     scale: float = 1.0,
     saturation_dn: Optional[float] = None,
     allow_crop: bool = True,
-) -> Dict[str, np.ndarray]:
+) -> dict[str, np.ndarray]:
     """
     Inject a 2D patch into the simulated datacube *at a specific frame* so that its DN
     persists into all subsequent frames (as a real instantaneous hit would).
@@ -354,7 +359,6 @@ def inject_patch(
         inc[target_frame, ys0:ys1, xs0:xs1] += patch
         cube[target_frame:, ys0:ys1, xs0:xs1] += patch[None, :, :]
 
-
     # Add to incremental map at target frame
     inc[target_frame, ys0:ys1, xs0:xs1] += patch
 
@@ -370,14 +374,13 @@ def inject_patch(
     return sim
 
 
-
 def extract_patch(
     data: np.ndarray,
     frame_idx: int,
     x_center: int,
     y_center: int,
     half_size: int,
-    baseline: Literal["none","min","median","mean"] = "median",
+    baseline: Literal["none", "min", "median", "mean"] = "median",
 ) -> np.ndarray:
     """
     Compatible with your widget's outputs.
@@ -406,7 +409,7 @@ def extract_patch(
     xs0, xs1 = max(x0, 0), min(x1, W)
 
     patch = np.zeros((y1 - y0, x1 - x0), dtype=np.float32)
-    patch[(ys0 - y0):(ys1 - y0), (xs0 - x0):(xs1 - x0)] = a2d[ys0:ys1, xs0:xs1]
+    patch[(ys0 - y0) : (ys1 - y0), (xs0 - x0) : (xs1 - x0)] = a2d[ys0:ys1, xs0:xs1]
 
     if baseline != "none":
         if baseline == "median":
@@ -428,13 +431,13 @@ def inject_from_widget_selection(
     y_center: int,
     half_size: int,
     target_frame_in_sim: int,
-    insert_center_yx_in_sim: Tuple[float, float],
+    insert_center_yx_in_sim: tuple[float, float],
     scale_dn: float = 1.0,
-    baseline: Literal["none","min","median","mean"] = "median",
-    op: Literal["add","replace"] = "add",
+    baseline: Literal["none", "min", "median", "mean"] = "median",
+    op: Literal["add", "replace"] = "add",
     saturation_dn: Optional[float] = None,
     allow_crop: bool = True,
-    subpixel_shift: Optional[Tuple[float, float]] = None,  # (dy, dx) applied to patch before injection
+    subpixel_shift: Optional[tuple[float, float]] = None,  # (dy, dx) applied to patch before injection
 ) -> dict:
     """
     1) Extract CR patch from the big numpy array using the widget's ROI.
@@ -479,8 +482,6 @@ def inject_from_widget_selection(
     )
 
 
-
-
 # -----------------------------
 # Example usage
 # -----------------------------
@@ -489,7 +490,7 @@ if __name__ == "__main__":
     sources = [
         PointSource(x=5.5, y=6.5, rate_dn_per_frame=50.0, fwhm_px=1.7, jitter_frac=0.03, start_frame=0),
         PointSource(x=4.2, y=11.8, rate_dn_per_frame=20.0, fwhm_px=0.9, jitter_frac=0.02, start_frame=6),
-        PointSource(x=10.4, y=14.3, rate_dn_per_frame=100.0, fwhm_px=3.9, jitter_frac=0.06, start_frame=15)
+        PointSource(x=10.4, y=14.3, rate_dn_per_frame=100.0, fwhm_px=3.9, jitter_frac=0.06, start_frame=15),
     ]
 
     sim = simulate_point_source_ramp(
@@ -507,35 +508,35 @@ if __name__ == "__main__":
     times = sim["times"]
 
     # Plot example per-pixel time series (pick the two brightest-ish pixels by inspection)
-    plot_pixel_timeseries(cube, coords=[(5,6), (2,2), (3,12), (10,13)])
+    plot_pixel_timeseries(cube, coords=[(5, 6), (2, 2), (3, 12), (10, 13)])
 
     # Plot aperture-summed curves around the nominal source centers
     centers = [(s["x"], s["y"]) for s in sim["source_truth"]]
     plot_aperture_timeseries(cube, centers=centers, radius_px=1.25)
     plot_final_frame_with_apertures(cube, centers=centers, radius_px=1.25)
-    
+
     # Suppose your widget picked this event in the big array:
     # Option A: your actual large array on disk
     sim_data = np.load("Outputs/Sample Outputs/60sec_sim_new_20250801_dn_array_patchByBlob.npy")  # 2D or 3D
-    sim_data /= sim_data.max()          # normalize to [0,1]
-    sim_data *= 2e3                     # rescale so brightest CR ≈ 2,000 DN
+    sim_data /= sim_data.max()  # normalize to [0,1]
+    sim_data *= 2e3  # rescale so brightest CR ≈ 2,000 DN
 
-    frame_idx  = 0          # or 61, etc., from your UI
-    x_center   = 1420
-    y_center   = 990
-    half_size  = 24         # same as your widget
-    baseline   = "median"   # strip local background around the CR
-    scale_dn   = 1.0        # set if you need energy->DN conversion
+    frame_idx = 0  # or 61, etc., from your UI
+    x_center = 1420
+    y_center = 990
+    half_size = 24  # same as your widget
+    baseline = "median"  # strip local background around the CR
+    scale_dn = 1.0  # set if you need energy->DN conversion
 
     # In the PSF sim, choose when & where to inject
-    target_frame_in_sim      = 25
-    insert_center_yx_in_sim  = (12.0, 12.0)   # (y, x) in the sim grid; can be fractional
+    target_frame_in_sim = 25
+    insert_center_yx_in_sim = (12.0, 12.0)  # (y, x) in the sim grid; can be fractional
     # optional tiny alignment tweak:
     subpixel_shift = (0.0, 0.0)
 
     sim = inject_from_widget_selection(
         sim=sim,
-        data=sim_data,                    # or exp_data_cube
+        data=sim_data,  # or exp_data_cube
         frame_idx=frame_idx,
         x_center=x_center,
         y_center=y_center,
@@ -553,6 +554,9 @@ if __name__ == "__main__":
     # Reuse your existing plots to confirm:
     centers = [(s["x"], s["y"]) for s in sim["source_truth"]]
     plot_final_frame_with_apertures(sim["cube"], centers=centers, radius_px=1.25)
-    plot_aperture_timeseries(sim["cube"], centers=[insert_center_yx_in_sim], radius_px=2.0,
-                            title="Aperture light curve at injected CR location")
-
+    plot_aperture_timeseries(
+        sim["cube"],
+        centers=[insert_center_yx_in_sim],
+        radius_px=2.0,
+        title="Aperture light curve at injected CR location",
+    )
