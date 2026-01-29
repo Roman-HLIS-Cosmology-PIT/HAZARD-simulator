@@ -1,5 +1,6 @@
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from importlib.resources import files
 
 import h5py
 import matplotlib.pyplot as plt
@@ -210,8 +211,8 @@ X0_cm = X0_gPercmSqd / HgCdTe_density  # cm
 Z_mean, A_mean = mean_Z_A_HgCdTe(x)  # Z_mean is unitless, A_mean has units of g/mol
 
 color_list = []
-# path = files("gcrsim").joinpath("data/rgb_color_list.txt")
-path = "rgb_color_list.txt"  # only use when script is local, else uncomment above
+path = files("hazard_simulator.data").joinpath("rgb_color_list.txt")
+
 with open(path, "r") as file:
     for line in file:
         line = line.strip()  # Remove leading/trailing whitespace
@@ -227,8 +228,8 @@ with open(path, "r") as file:
 
 # Reading in sunspot data to compute ISO parameters and rigidity spectrum
 # Sunspot data downloaded from https://www.sidc.be/SILSO/datafiles
-# csv_path = files("gcrsim").joinpath("data/SN_m_tot_V2.0.csv")
-csv_path = "SN_m_tot_V2.0.csv"  # only use when script is local, else uncomment above
+
+csv_path = files("hazard_simulator.data").joinpath("SN_m_tot_V2.0.csv")
 month_df = pd.read_csv(csv_path, sep=";", engine="python")
 
 # Contents:

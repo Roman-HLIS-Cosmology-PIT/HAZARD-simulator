@@ -99,6 +99,7 @@ ignore = [
 
 [tool.setuptools.package-data]
 hazard_simulator = ["py.typed"]
+"hazard_simulator.data" = ["SN_m_tot_V2.0.csv","rgb_color_list.txt"]
 
 [tool.coverage.run]
 omit=["src/hazard_simulator/_version.py"]
