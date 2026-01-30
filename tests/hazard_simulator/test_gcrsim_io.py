@@ -1,6 +1,7 @@
+import builtins
 import importlib.util
 import io
-import builtins
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -41,10 +42,13 @@ def _import_gcrsim_with_stubs(monkeypatch):
 
 @pytest.fixture
 def gcrsim(monkeypatch):
+    """test function for gcrsim driver script"""
+
     return _import_gcrsim_with_stubs(monkeypatch)
 
 
 def test_save_load_sim_roundtrip(tmp_path, gcrsim):
+    """Test for saving and loading in hdf5 format"""
     CRS = gcrsim.CosmicRaySimulation
 
     # Create a tiny sim instance with historic_df=None to avoid date-dependent modulation logic
@@ -56,21 +60,23 @@ def test_save_load_sim_roundtrip(tmp_path, gcrsim):
     positions = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
     pid = CRS.encode_pid(1, 0, 0)
     streak = (
-        positions,          # positions
-        pid,                # pid
-        2,                  # num_steps
-        0.1, 0.2,           # theta_i, phi_i
-        0.3, 0.4,           # theta_f, phi_f
-        [0.0, 0.0],         # theta0_vals
+        positions,  # positions
+        pid,  # pid
+        2,  # num_steps
+        0.1,
+        0.2,  # theta_i, phi_i
+        0.3,
+        0.4,  # theta_f, phi_f
+        [0.0, 0.0],  # theta0_vals
         [(0.0, 0.0, 1.0)],  # curr_vels
         [(0.0, 0.0, 1.0)],  # new_vels
-        [(0.0, -0.1)],      # energy_changes
-        (0.0, 0.0, 0.0),    # start_pos
-        (1.0, 0.0, 0.0),    # end_pos
-        10.0,               # init_en
-        9.9,                # final_en
-        0,                  # delta_count
-        True,               # is_primary
+        [(0.0, -0.1)],  # energy_changes
+        (0.0, 0.0, 0.0),  # start_pos
+        (1.0, 0.0, 0.0),  # end_pos
+        10.0,  # init_en
+        9.9,  # final_en
+        0,  # delta_count
+        True,  # is_primary
     )
     streaks_list = [[[streak]]]
     gcr_counts = [("H", 1)]
@@ -85,6 +91,6 @@ def test_save_load_sim_roundtrip(tmp_path, gcrsim):
 
     # Spot-check one field in the round-tripped streak
     st0 = streaks2[0][0][0]
-    assert st0[1] == pid            # pid
-    assert st0[2] == 2              # num_steps
+    assert st0[1] == pid  # pid
+    assert st0[2] == 2  # num_steps
     assert tuple(st0[11]) == (0.0, 0.0, 0.0)  # start_pos

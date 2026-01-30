@@ -1,11 +1,13 @@
+import builtins
 import importlib.util
 import io
-import builtins
+
 import pandas as pd
 import pytest
 
 
 def _import_gcrsim_with_stubs(monkeypatch):
+    """Test for importing gcrsim package data"""
     rgb_text = "red\t#ff0000\n"
     real_open = builtins.open
 
@@ -40,10 +42,12 @@ def _import_gcrsim_with_stubs(monkeypatch):
 
 @pytest.fixture
 def gcrsim(monkeypatch):
+    """Test for gcrsim driver script"""
     return _import_gcrsim_with_stubs(monkeypatch)
 
 
 def test_pid_roundtrip_encode_decode(gcrsim):
+    """Test to verify pids can be encoded and decoded without error"""
     CRS = gcrsim.CosmicRaySimulation
     enc = CRS.encode_pid(species_idx=1, primary_idx=45, delta_idx=23)
     s = CRS.decode_pid(enc)
@@ -53,6 +57,7 @@ def test_pid_roundtrip_encode_decode(gcrsim):
 
 
 def test_get_parent_pid_clears_delta_bits(gcrsim):
+    """Test to make sure that binary delta bits are cleared when calling get_parent"""
     CRS = gcrsim.CosmicRaySimulation
     enc = CRS.encode_pid(species_idx=2, primary_idx=7, delta_idx=999)
     parent = CRS.get_parent_pid(enc)
@@ -63,6 +68,7 @@ def test_get_parent_pid_clears_delta_bits(gcrsim):
 
 
 def test_encode_pid_string_rejects_bad_format(gcrsim):
+    """Test to make sure pid functions reject improperly formarted pids"""
     CRS = gcrsim.CosmicRaySimulation
     with pytest.raises(ValueError):
         CRS.encode_pid_string("not-a-pid")

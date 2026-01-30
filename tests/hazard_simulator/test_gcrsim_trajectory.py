@@ -1,12 +1,14 @@
+import builtins
 import importlib.util
 import io
-import builtins
+
 import numpy as np
 import pandas as pd
 import pytest
 
 
 def _import_gcrsim_with_stubs(monkeypatch):
+    """Test for gcrsim driver script"""
     real_open = builtins.open
 
     def fake_open(path, mode="r", *args, **kwargs):
@@ -41,10 +43,12 @@ def _import_gcrsim_with_stubs(monkeypatch):
 
 @pytest.fixture
 def gcrsim(monkeypatch):
+    """Test for  gcrsim  monkey business"""
     return _import_gcrsim_with_stubs(monkeypatch)
 
 
 def test_compute_curvature_straight_line_zero(gcrsim):
+    """Test to ensure curvature gives sensible answers"""
     CRS = gcrsim.CosmicRaySimulation
     positions = [(0, 0, 0), (1, 0, 0), (2, 0, 0), (3, 0, 0)]
     kappa = CRS.compute_curvature(positions)
@@ -52,6 +56,7 @@ def test_compute_curvature_straight_line_zero(gcrsim):
 
 
 def test_transform_angles_identity_when_primary_along_z(gcrsim):
+    """Test for proper angle identity for primary"""
     CRS = gcrsim.CosmicRaySimulation
     theta_p, phi_p = 0.0, 0.0  # along +z
     theta_d, phi_d = 0.7, 1.2
