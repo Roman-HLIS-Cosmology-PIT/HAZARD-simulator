@@ -1,6 +1,6 @@
 """Test functions for material properties."""
 
-import gcrsim
+from hazard_simulator import gcrsim
 import numpy as np
 
 
