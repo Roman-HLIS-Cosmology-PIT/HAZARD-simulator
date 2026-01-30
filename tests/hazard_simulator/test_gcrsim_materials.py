@@ -1,7 +1,7 @@
 """Test functions for material properties."""
 
-from hazard_simulator import gcrsim
 import numpy as np
+from hazard_simulator import gcrsim
 
 
 def test_mean_excitation_energy_in_bounds():
@@ -35,4 +35,3 @@ def test_mean_Z_A_reasonable():
     assert np.isfinite(Z_mean) and np.isfinite(A_mean)
     assert 40 < Z_mean < 80  # rough sanity: between Cd/Te/Hg scale
     assert 100 < A_mean < 220
-
