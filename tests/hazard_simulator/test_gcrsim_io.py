@@ -1,53 +1,10 @@
-import builtins
-import importlib.util
-import io
+"""Tests for package data IO"""
 
 import numpy as np
-import pandas as pd
-import pytest
+from hazard_simulator import gcrsim
 
 
-def _import_gcrsim_with_stubs(monkeypatch):
-    real_open = builtins.open
-
-    def fake_open(path, mode="r", *args, **kwargs):
-        if str(path).endswith("rgb_color_list.txt"):
-            return io.StringIO("red\t#ff0000\n")
-        return real_open(path, mode, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "open", fake_open, raising=True)
-    monkeypatch.setattr(
-        pd,
-        "read_csv",
-        lambda *a, **k: pd.DataFrame(
-            {
-                "year": [2018],
-                "month": [1],
-                "date": [2018.04],
-                "mean": [10.0],
-                "std_dev": [1.0],
-                "num_obs": [30],
-                "marker": ["D"],
-            }
-        ),
-        raising=True,
-    )
-
-    spec = importlib.util.spec_from_file_location("gcrsim", "gcrsim.py")
-    mod = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(mod)
-    return mod
-
-
-@pytest.fixture
-def gcrsim(monkeypatch):
-    """test function for gcrsim driver script"""
-
-    return _import_gcrsim_with_stubs(monkeypatch)
-
-
-def test_save_load_sim_roundtrip(tmp_path, gcrsim):
+def test_save_load_sim_roundtrip(tmp_path):
     """Test for saving and loading in hdf5 format"""
     CRS = gcrsim.CosmicRaySimulation
 
@@ -94,3 +51,4 @@ def test_save_load_sim_roundtrip(tmp_path, gcrsim):
     assert st0[1] == pid  # pid
     assert st0[2] == 2  # num_steps
     assert tuple(st0[11]) == (0.0, 0.0, 0.0)  # start_pos
+
