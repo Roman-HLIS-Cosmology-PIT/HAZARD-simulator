@@ -51,4 +51,3 @@ def test_save_load_sim_roundtrip(tmp_path):
     assert st0[1] == pid  # pid
     assert st0[2] == 2  # num_steps
     assert tuple(st0[11]) == (0.0, 0.0, 0.0)  # start_pos
-
