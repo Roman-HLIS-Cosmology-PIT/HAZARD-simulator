@@ -1,3 +1,5 @@
+.. image:: https://codecov.io/github/Roman-HLIS-Cosmology-PIT/HAZARD-simulator/graph/badge.svg?token=W84I8gAWqx
+
 GCR Simulation Framework — Main Scripts Overview (WORK IN PROGRESS)
 ###################################################################
 
