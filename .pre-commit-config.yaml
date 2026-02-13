@@ -59,6 +59,26 @@ repos:
       - id: ruff-format
         name: Format code using ruff
         types_or: [ python, pyi, jupyter ]
+    # Make sure Sphinx can build the documentation without issues.
+  - repo: local
+    hooks:
+      - id: sphinx-build
+        name: Build documentation with Sphinx
+        entry: sphinx-build
+        language: system
+        always_run: true
+        exclude_types: [file, symlink]
+        args:
+          [
+            "-T", # Show full trace back on exception
+            "-E", # Don't use saved env. always read all files.
+            "-b", # Flag to select which builder to use
+            "html", # Use the HTML builder
+            "-d", # Flag for cached environment and doctrees
+            "./docs/_build/doctrees", # directory
+            "./docs", # Source directory of documents
+            "./_readthedocs", # Output directory for rendered documents.
+          ]
     # Run unit tests, verify that they pass. Note that coverage is run against
     # the ./src directory here because that is what will be committed. In the
     # github workflow script, the coverage is run against the installed package
