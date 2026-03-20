@@ -14,25 +14,18 @@ classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python",
 ]
-dynamic = ["version"]
+dynamic = ["version", "dependencies", "optional-dependencies"]
 requires-python = ">=3.12"
-dependencies = [
-]
+
+[tool.setuptools.dynamic]
+dependencies = { file = "requirements.txt" }
 
 [project.urls]
 "Source Code" = "https://github.com/Roman-HLIS-Cosmology-PIT/hazard_simulator"
 
 # On a mac, install optional dependencies with `pip install '.[dev]'` (include the single quotes)
-[project.optional-dependencies]
-dev = [
-    "asv[virtualenv]==0.6.5", # Used to compute performance benchmarks
-    "jupyter", # Clears output from Jupyter notebooks
-    "mypy", # Used for static type checking of files
-    "pre-commit", # Used to run checks before finalizing a git commit
-    "pytest",
-    "pytest-cov", # Used to report total code coverage
-    "ruff", # Used for static linting of files
-]
+[tool.setuptools.dynamic.optional-dependencies]
+dev = { file = "requirements-dev.txt" }
 
 [build-system]
 requires = [
