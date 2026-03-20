@@ -27,8 +27,9 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        pip install --system -e .[dev]
-        if [ -f requirements.txt ]; then pip install --system -r requirements.txt; fi
+        python -m pip install --upgrade pip
+        pip install .[dev]
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
     - name: Run unit tests with pytest
       run: |
         python -m pytest --cov=hazard_simulator --cov-report=xml
