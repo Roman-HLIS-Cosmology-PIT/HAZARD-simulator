@@ -1,4 +1,5 @@
 {
+  "on_HPC": false,
   "channel_size": 32,
   "supercell_size": 128,
   "sigma_mult": 12,
