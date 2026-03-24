@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from astropy.stats import sigma_clipped_stats
-from scipy.ndimage import binary_dilation, label, center_of_mass
+from scipy.ndimage import binary_dilation, maximum_filter, label, center_of_mass
 from tqdm.contrib.concurrent import thread_map
 from astropy.io import fits
 from pathlib import Path
@@ -62,12 +62,25 @@ def compute_mask_no_response(data, sat_cut):
     print(f"✅ Done looking for non-responsive pixesls (median(med_diff)={np.median(med_diff):.3e})")
     return mask_non_res
 
+def find_peaks_for_frame(data_cube, index, badpix_mask, sigma_thresh):
+    image   = data_cube[index]
+    _, med, _ = sigma_clipped_stats(image, sigma=3.0, maxiters=5)
+    mad     = np.median(np.abs(image - med))
+    sigma_e = mad * 1.4826
+    threshold = med + sigma_thresh * sigma_e
+
+    local_max = maximum_filter(image, size=3)
+    cand      = (image == local_max) & (~badpix_mask) & (image > threshold)
+
+    ys, xs = np.where(cand)
+    peaks  = [(index, int(y), int(x)) for y, x in zip(ys, xs)]
+    return peaks, threshold
 
 # HELPER FUNCTIONS
 
 
 def main():
-    #check the time
+    #check the time before starting
     start_time = time.perf_counter()
 
     # load in FITS data cube and gain array, 
@@ -103,8 +116,6 @@ def main():
     (compute_mask_no_response, sat_cut),
     ]
     
-    #check the time before starting 
-    print()
     mask_hot, mask_veryhot, mask_non_res = thread_map(
         lambda fn, param: fn(data_cube, param),
         [fn for fn, _ in tasks],
@@ -151,6 +162,44 @@ def main():
     total_time = time.perf_counter() - start_time
     print(f"Time to combine badpix masks and add adjacent pix: {comb_and_comp_time}; total time elapsed: {total_time}")
     now = time.perf_counter()
+
+    #find candidate events in the data
+    sigma_thresh  = 4.51
+    mask_expanded = maximum_filter(maskArray.astype(int), size=5) > 0
+
+    # run in parallel with a tqdm bar
+    results = thread_map(
+        lambda i: find_peaks_for_frame(data_cube, i, mask_expanded, sigma_thresh), # worker fn
+        range(Nframe),       # first iterable
+        max_workers=num_of_cores, # second iterable
+        desc="Finding peaks",     # bar label
+        unit="frame"              # units on bar
+    )
+
+    #check the time
+    candidate_search_time = time.perf_counter() - now
+    total_time = time.perf_counter() - start_time
+    print(f"Time to find candidate events: {candidate_search_time}; total time elapsed: {total_time}")
+    now = time.perf_counter()
+
+    # unzip them into two lists
+    all_frame_peaks, thresholds = zip(*results)
+
+    # previous-frame filtering
+    filtered_events = []
+    for f, peaks in tqdm(enumerate(all_frame_peaks),
+                         total=Nframe,
+                         desc='Verifying single-epoch occurrence',
+                         unit='frame'):
+        prev_f   = (f - 1) % Nframe
+        prev_pos = {(y, x) for (_, y, x) in all_frame_peaks[prev_f]}
+        for (_, y, x) in peaks:
+            if (y, x) not in prev_pos:
+                filtered_events.append((f, y, x))
+
+    events = np.array(filtered_events, dtype=int)
+    print(f"Found {len(events)} x-ray & cosmic-ray-like peaks "
+          f"with ≥{sigma_thresh:.1f} σ cut")    
 
 if __name__ == "__main__":
     main()
