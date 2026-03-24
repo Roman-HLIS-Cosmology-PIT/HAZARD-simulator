@@ -1,7 +1,7 @@
 # script for analyzing real and simulated cosmic ray events
 # Initial creation date: 23-Mar-2026
 # Developers: Anthony Harbo Torres
-# version 0.10
+# version 0.11
 
 import os
 import time
@@ -160,6 +160,8 @@ def process_hit(
     supercell_size,
     blob_sums,
     blob_counts,
+    blob_track_lengths,
+    blob_ginis,
 ):
     frame, y, x, blob_label = hit.astype(int)
 
@@ -175,6 +177,8 @@ def process_hit(
 
     sum_blob = int(blob_sums[frame][blob_label - 1])
     n_pix_blob = int(blob_counts[frame][blob_label - 1])
+    track_length_blob = float(blob_track_lengths[frame][blob_label - 1])
+    gini_blob = float(blob_ginis[frame][blob_label - 1])
 
     return {
         "frame": frame,
@@ -189,6 +193,9 @@ def process_hit(
         "blob_DN": sum_blob,
         "blob_e": sum_blob * sc_gain,
         "n_pix_blob": n_pix_blob,
+        "track_length_pix": track_length_blob,
+        "track_length_um": track_length_blob * 10.0,
+        "gini_blob": gini_blob,
         "supercell_gain": sc_gain,
     }
 
@@ -209,6 +216,47 @@ def _compute_frame_median(frame_index, data_cube):
     _, med, _ = sigma_clipped_stats(img, sigma=3.0, maxiters=15)
     return frame_index, med
 
+def _gini_coefficient(values):
+    """
+    Gini coefficient of a 1D array of nonnegative values.
+    Returns 0 for empty arrays or all-zero arrays.
+    """
+    x = np.asarray(values, dtype=np.float64)
+    x = x[np.isfinite(x)]
+
+    if x.size == 0:
+        return 0.0
+
+    # For morphology / charge concentration, negative background-subtracted
+    # values are not physically useful here.
+    x = np.clip(x, 0.0, None)
+
+    if np.all(x == 0):
+        return 0.0
+
+    x = np.sort(x)
+    n = x.size
+    index = np.arange(1, n + 1)
+
+    return (np.sum((2 * index - n - 1) * x)) / (n * np.sum(x))
+
+
+def _blob_track_length(coords):
+    """
+    Maximum Euclidean separation between any two blob pixels.
+    coords should be an (N, 2) array of (y, x) pixel coordinates.
+    Returns length in pixels.
+    """
+    coords = np.asarray(coords, dtype=np.float64)
+    n = len(coords)
+
+    if n <= 1:
+        return 0.0
+
+    # Cheap exact method for typical small blobs
+    diffs = coords[:, None, :] - coords[None, :, :]
+    d2 = np.sum(diffs * diffs, axis=-1)
+    return float(np.sqrt(np.max(d2)))
 
 
 # MAIN FUNCTION BELOW
@@ -223,17 +271,20 @@ def cr_analysis(fits_path, gain_path, params):
         "sigma_mult": 12,
         "sat_cut": 5.999,
         "sigma_thresh": 4.51,
+        "save_dataframe": True,
+        "output_csv": "cr_event_analysis_results.csv",
+        "output_parquet": None
     }
 
     params = {**default_params, **params}
 
-    on_HPC = params["on_HPC"]
+    on_HPC = params.get("on_HPC", False) or ("SLURM_JOB_ID" in os.environ)
     channel_size = params["channel_size"]
     supercell_size = params["supercell_size"]
     sigma_mult = params["sigma_mult"]
     sat_cut = params["sat_cut"]
     sigma_thresh = params["sigma_thresh"]
-
+    
 
     #check the time before starting
     start_time = time.perf_counter()
@@ -250,7 +301,7 @@ def cr_analysis(fits_path, gain_path, params):
     now = time.perf_counter()
     load_time = now - start_time
     print(f"Time to load the data cube: {load_time}s")
-
+    
     #enter number of available cores
     if on_HPC:
         num_of_cores = int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
@@ -259,10 +310,10 @@ def cr_analysis(fits_path, gain_path, params):
         num_of_cores = os.cpu_count() + 4
         print(f"Number of cores available for parallelization = {num_of_cores - 4}")
 
-    mask_workers = min(num_of_cores, 3)
-    peak_workers = min(num_of_cores, 4)
-    median_workers = min(num_of_cores, 2)
-    hit_workers = min(num_of_cores, 4)
+    mask_workers = min(num_of_cores, 16)
+    peak_workers = min(num_of_cores, 12)
+    median_workers = min(num_of_cores, 8)
+    hit_workers = min(num_of_cores, 12)
 
     #X-ray energy (in eV), will need this later
     xray_en = 5898.75
@@ -406,6 +457,8 @@ def cr_analysis(fits_path, gain_path, params):
 
     blob_sums = {}
     blob_counts = {}
+    blob_track_lengths = {}
+    blob_ginis = {}
     hit_blob_label = np.zeros(len(merged_events), dtype=int)
 
     for f, idxs in event_idxs.items():
@@ -424,9 +477,25 @@ def cr_analysis(fits_path, gain_path, params):
         labels_idx = np.arange(1, n_blobs + 1)
         sums = ndi_sum(im_corr, lab_img, labels_idx)
         counts = ndi_sum(np.ones(lab_img.shape, dtype=np.uint8), lab_img, labels_idx).astype(int)
-
+        track_lengths = np.zeros(n_blobs, dtype=np.float32)
+        ginis = np.zeros(n_blobs, dtype=np.float32)
+    
+        for blob_label in labels_idx:
+            blob_mask = (lab_img == blob_label)
+    
+            # coords of all pixels in this blob
+            blob_coords = np.argwhere(blob_mask)
+    
+            # background-subtracted signal values for this blob
+            blob_vals = im_corr[blob_mask]
+    
+            track_lengths[blob_label - 1] = _blob_track_length(blob_coords)
+            ginis[blob_label - 1] = _gini_coefficient(blob_vals)
+    
         blob_sums[f] = sums
         blob_counts[f] = counts
+        blob_track_lengths[f] = track_lengths
+        blob_ginis[f] = ginis
 
         hit_blob_label[idxs] = lab_img[coords[:, 0], coords[:, 1]]
 
@@ -440,6 +509,8 @@ def cr_analysis(fits_path, gain_path, params):
         supercell_size=supercell_size,
         blob_sums=blob_sums,
         blob_counts=blob_counts,
+        blob_track_lengths=blob_track_lengths,
+        blob_ginis=blob_ginis,
     )
 
     rows = thread_map(
@@ -454,11 +525,51 @@ def cr_analysis(fits_path, gain_path, params):
     df = pd.DataFrame(rows)
     print(df.head())
 
+    save_dataframe = params.get("save_dataframe", True)
+    output_csv = params.get("output_csv", "cr_event_analysis_results.csv")
+    output_parquet = params.get("output_parquet", None)
+    
+    if save_dataframe:
+        if output_csv:
+            df.to_csv(output_csv, index=False)
+            print(f"Saved dataframe to CSV: {output_csv}")
+    
+        if output_parquet:
+            df.to_parquet(output_parquet, index=False)
+            print(f"Saved dataframe to Parquet: {output_parquet}")
+
     #check the time
     pd_time = time.perf_counter() - now
     total_time = time.perf_counter() - start_time
     print(f"Time to create initial dataframe: {pd_time}s; total time elapsed: {total_time}s")
     now = time.perf_counter()
+    
+    # --- Build timestamp ---
+    timestamp = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
+    
+    # --- Get base filename from params ---
+    base_name = params.get("output_csv", "cr_event_analysis_results.csv")
+    name, ext = os.path.splitext(base_name)
+    
+    # --- Check HPC mode ---
+    on_HPC = params.get("on_HPC", False)
+    
+    if on_HPC:
+        job_id = os.environ.get("SLURM_JOB_ID", "unknown")
+        output_csv = f"{name}_{timestamp}_job{job_id}{ext}"
+    else:
+        output_csv = f"{name}_{timestamp}{ext}"
+    
+    print(f"Output file will be: {output_csv}")
+    
+    # --- Save dataframe ---
+    save_dataframe = params.get("save_dataframe", True)
+    
+    if save_dataframe:
+        df.to_csv(output_csv, index=False)
+        print(f"Saved dataframe to: {output_csv}")
+    
+    return df
 
 #---------end main function------
 

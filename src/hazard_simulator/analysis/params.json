@@ -1,8 +1,14 @@
 {
   "on_HPC": false,
+
   "channel_size": 32,
   "supercell_size": 128,
+
   "sigma_mult": 12,
   "sat_cut": 5.999,
-  "sigma_thresh": 4.51
+  "sigma_thresh": 4.51,
+
+  "save_dataframe": true,
+  "output_csv": "cr_event_analysis_results.csv",
+  "output_parquet": null
 }
