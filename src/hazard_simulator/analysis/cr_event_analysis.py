@@ -177,7 +177,7 @@ def process_hit(
     n_pix_blob = int(blob_counts[frame][blob_label - 1])
 
     return {
-        "frame": f,
+        "frame": frame,
         "y": y,
         "x": x,
         "median": med,
@@ -194,7 +194,7 @@ def process_hit(
 
 # HELPER FUNCTIONS
 def _prep_frame(data_cube, frame_index):
-    img   = data_cube[index].astype(np.float32)
+    img   = data_cube[frame_index].astype(np.float32)
     _, med, _ = sigma_clipped_stats(img, sigma=3.0, maxiters=15)
     return frame_index, med
 
@@ -217,6 +217,7 @@ def cr_analysis(fits_path, gain_path, params):
         params = {}
 
     default_params = {
+        "on_HPC": False,
         "channel_size": 32,
         "supercell_size": 128,
         "sigma_mult": 12,
@@ -226,6 +227,7 @@ def cr_analysis(fits_path, gain_path, params):
 
     params = {**default_params, **params}
 
+    on_HPC = params["on_HPC"]
     channel_size = params["channel_size"]
     supercell_size = params["supercell_size"]
     sigma_mult = params["sigma_mult"]
@@ -250,8 +252,17 @@ def cr_analysis(fits_path, gain_path, params):
     print(f"Time to load the data cube: {load_time}s")
 
     #enter number of available cores
-    num_of_cores = os.cpu_count() + 4
-    print(f"Number of cores available for parallelization = {num_of_cores - 4}")
+    if on_HPC:
+        num_of_cores = int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
+        print(f"Number of cores available for parallelization = {num_of_cores}")
+    else:
+        num_of_cores = os.cpu_count() + 4
+        print(f"Number of cores available for parallelization = {num_of_cores - 4}")
+
+    mask_workers = min(num_of_cores, 3)
+    peak_workers = min(num_of_cores, 4)
+    median_workers = min(num_of_cores, 2)
+    hit_workers = min(num_of_cores, 4)
 
     #X-ray energy (in eV), will need this later
     xray_en = 5898.75
@@ -271,7 +282,7 @@ def cr_analysis(fits_path, gain_path, params):
         lambda fn, param: fn(data_cube, param),
         [fn for fn, _ in tasks],
         [param for _, param in tasks],
-        max_workers=num_of_cores,
+        max_workers=mask_workers,
         desc="Computing all masks",
         unit="mask"
     )
@@ -321,7 +332,7 @@ def cr_analysis(fits_path, gain_path, params):
     results = thread_map(
         lambda i: find_peaks_for_frame(data_cube, i, mask_expanded, sigma_thresh), # worker fn
         range(Nframe),       # first iterable
-        max_workers=num_of_cores, # second iterable
+        max_workers=peak_workers, # second iterable
         desc="Finding peaks",     # bar label
         unit="frame"              # units on bar
     )
@@ -374,7 +385,7 @@ def cr_analysis(fits_path, gain_path, params):
     median_results = thread_map(
         compute_frame_median_worker,
         range(Nframe),
-        max_workers=num_of_cores,
+        max_workers=median_workers,
         desc="Computing frame medians",
         unit="frame"
     )
@@ -406,13 +417,13 @@ def cr_analysis(fits_path, gain_path, params):
         dil = binary_dilation(mask_peaks, structure=big_struct)
         lab_img, n_blobs = label(dil, structure=small_struct)
 
-        img = data_cube[f].astype(np.float64)
+        img = data_cube[f].astype(np.float32, copy=False)
         med = medians[f]
-        im_corr = img - med
+        im_corr = img - np.float32(med)
 
         labels_idx = np.arange(1, n_blobs + 1)
         sums = ndi_sum(im_corr, lab_img, labels_idx)
-        counts = ndi_sum(np.ones_like(im_corr), lab_img, labels_idx).astype(int)
+        counts = ndi_sum(np.ones(lab_img.shape, dtype=np.uint8), lab_img, labels_idx).astype(int)
 
         blob_sums[f] = sums
         blob_counts[f] = counts
@@ -434,7 +445,7 @@ def cr_analysis(fits_path, gain_path, params):
     rows = thread_map(
         process_hit_worker,
         events_aug,
-        max_workers=num_of_cores,
+        max_workers=hit_workers,
         desc="Processing hits",
         unit="hit"
     )
