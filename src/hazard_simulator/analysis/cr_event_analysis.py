@@ -1,5 +1,7 @@
 import os
 import time
+import json
+import argparse
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -11,26 +13,16 @@ from pathlib import Path
 
 
 
-def load_data():
-    try:
-        here = Path(__file__).parent
-    except NameError:
-        # __file__ doesn't exist in notebooks or interactive sessions
-        here = Path.cwd()
-    fits_path = here / '../Data/Real/20190919_95k_1p1m0p1_fe55_20663_003_diff.fits'  # experimental data file, difference of frames in a fits data cube
-    
+def load_data(fits_path):   
     with fits.open(fits_path) as hdulist:
         # hdulist is a list of HDU (Header/Data Unit) objects
         primary_hdu = hdulist[0]
         data = primary_hdu.data      # NumPy array of your image/spectrum/whatever
         header = primary_hdu.header  # FITS header metadata
 
-    gain_array      = np.loadtxt('../Select_20663X_summary.txt')[:, 5].reshape((32, 32))
-    supercell_size  = 128   # pixels per supercell
-
     print(f"Data shape: {data.shape}")
     print("Header keys:", list(header.keys())[:10])
-    return(data,gain_array,supercell_size)
+    return(data)
 
 def compute_mask_med_frame(data, sigma_mult):
     print("⏳ Finding hot pixels…")
@@ -78,14 +70,34 @@ def find_peaks_for_frame(data_cube, index, badpix_mask, sigma_thresh):
 
 # HELPER FUNCTIONS
 
+# MAIN FUNCTION BELOW
+def cr_analysis(fits_path, gain_path, params):
+    if params is None:
+        params = {}
 
-def main():
+    default_params = {
+        "supercell_size": 32,
+        "sigma_mult": 12,
+        "sat_cut": 5.999,
+        "sigma_thresh": 4.51,
+    }
+
+    params = {**default_params, **params}
+
+    supercell_size = params["supercell_size"]
+    sigma_mult = params["sigma_mult"]
+    sat_cut = params["sat_cut"]
+    sigma_thresh = params["sigma_thresh"]
+
+
     #check the time before starting
     start_time = time.perf_counter()
 
     # load in FITS data cube and gain array, 
     # initialize size of each supercell in the gain array
-    data_cube, gain_array, supercell_size = load_data()
+    data_cube  = load_data(fits_path)
+    gain_array = np.loadtxt(gain_path)[:, 5].reshape((supercell_size, supercell_size))
+
     #data dimensions
     Nframe, h, w = data_cube.shape
 
@@ -202,4 +214,25 @@ def main():
           f"with ≥{sigma_thresh:.1f} σ cut")    
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Run cr analysis pipeline")
+    parser.add_argument("fits_path", help="Path to FITS file")
+    parser.add_argument("gain_path", help="Path to gain file")
+    parser.add_argument(
+        "--params",
+        type=str,
+        help="Path to JSON file with parameters",
+        default=None
+    )
+
+    args = parser.parse_args()
+
+    # Load params dict
+    if args.params:
+        with open(args.params, "r") as f:
+            params = json.load(f)
+    else:
+        params = {}
+
+    results = cr_analysis(args.fits_path, args.gain_path, params)
+
+    print("Analysis complete.")
