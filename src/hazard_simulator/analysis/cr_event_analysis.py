@@ -12,7 +12,7 @@ import pandas as pd
 from tqdm import tqdm
 from functools import partial
 from astropy.stats import sigma_clipped_stats
-from scipy.ndimage import binary_dilation, maximum_filter, label, center_of_mass, sum as ndi_sum
+from scipy.ndimage import binary_dilation, maximum_filter, label, find_objects, sum as ndi_sum
 from concurrent.futures import ThreadPoolExecutor
 from tqdm.contrib.concurrent import thread_map
 from astropy.io import fits
@@ -151,6 +151,83 @@ def merge_peaks(events, data, proximity_radius=2, max_workers=2):
             merged.extend(sub)
 
     return np.array(merged, dtype=int)
+
+def analyze_blobs_by_frame(
+    f,
+    idxs,
+    merged_events,
+    data_cube,
+    medians,
+    h,
+    w,
+    big_struct,
+    small_struct,
+):
+    """
+    Analyze all merged-event blobs in one frame.
+    Returns everything needed to build blob dictionaries and hit_blob_label.
+    """
+    coords = merged_events[idxs, 1:].astype(int)
+
+    # Mark peak pixels
+    mask_peaks = np.zeros((h, w), dtype=bool)
+    mask_peaks[coords[:, 0], coords[:, 1]] = True
+
+    # Merge nearby peaks into blobs
+    dil = binary_dilation(mask_peaks, structure=big_struct)
+    lab_img, n_blobs = label(dil, structure=small_struct)
+
+    # Background-subtracted working image
+    im_corr = data_cube[f].astype(np.float32, copy=True)
+    im_corr -= np.float32(medians[f])
+
+    labels_idx = np.arange(1, n_blobs + 1)
+
+    # Blob sums and counts
+    sums = ndi_sum(im_corr, lab_img, labels_idx)
+    counts = np.bincount(lab_img.ravel(), minlength=n_blobs + 1)[1:]
+
+    # Per-blob morphology
+    track_lengths = np.zeros(n_blobs, dtype=np.float32)
+    ginis = np.zeros(n_blobs, dtype=np.float32)
+
+    # Bounding boxes for each blob label
+    blob_slices = find_objects(lab_img)
+
+    for blob_label, slc in enumerate(blob_slices, start=1):
+        if slc is None:
+            continue
+
+        lab_sub = lab_img[slc]
+        im_sub = im_corr[slc]
+
+        local_mask = (lab_sub == blob_label)
+
+        # local coords inside the box
+        local_coords = np.argwhere(local_mask)
+
+        # shift to full-image coords
+        local_coords[:, 0] += slc[0].start
+        local_coords[:, 1] += slc[1].start
+
+        blob_vals = im_sub[local_mask]
+
+        track_lengths[blob_label - 1] = _blob_track_length(local_coords)
+        ginis[blob_label - 1] = _gini_coefficient(blob_vals)
+
+    # Which blob each merged event belongs to
+    hit_labels = lab_img[coords[:, 0], coords[:, 1]]
+
+    return {
+        "frame": f,
+        "idxs": idxs,
+        "sums": sums,
+        "counts": counts,
+        "track_lengths": track_lengths,
+        "ginis": ginis,
+        "hit_labels": hit_labels,
+    }
+
 
 def process_hit(
     hit,
@@ -313,6 +390,7 @@ def cr_analysis(fits_path, gain_path, params):
     mask_workers = min(num_of_cores, 16)
     peak_workers = min(num_of_cores, 12)
     median_workers = min(num_of_cores, 8)
+    blob_workers = min(num_of_cores, 10)
     hit_workers = min(num_of_cores, 12)
 
     #X-ray energy (in eV), will need this later
@@ -445,7 +523,7 @@ def cr_analysis(fits_path, gain_path, params):
         medians[frame_index] = median
 
     print("Summing up event pixels")
-    # ---- event index by frame ----
+
     event_idxs = {
         f: np.where(merged_events[:, 0] == f)[0]
         for f in np.unique(merged_events[:, 0])
@@ -461,45 +539,38 @@ def cr_analysis(fits_path, gain_path, params):
     blob_ginis = {}
     hit_blob_label = np.zeros(len(merged_events), dtype=int)
 
-    for f, idxs in event_idxs.items():
-        coords = merged_events[idxs, 1:].astype(int)
+    frame_items = list(event_idxs.items())
 
-        mask_peaks = np.zeros((h, w), dtype=bool)
-        mask_peaks[coords[:, 0], coords[:, 1]] = True
+    blob_results = thread_map(
+        lambda item: analyze_blobs_by_frame(
+            f=item[0],
+            idxs=item[1],
+            merged_events=merged_events,
+            data_cube=data_cube,
+            medians=medians,
+            h=h,
+            w=w,
+            big_struct=big_struct,
+            small_struct=small_struct,
+        ),
+        frame_items,
+        max_workers=blob_workers,
+        desc="Analyzing event blobs",
+        unit="frame",
+    )
 
-        dil = binary_dilation(mask_peaks, structure=big_struct)
-        lab_img, n_blobs = label(dil, structure=small_struct)
+    for result in blob_results:
+        f = result["frame"]
+        idxs = result["idxs"]
 
-        img = data_cube[f].astype(np.float32, copy=False)
-        med = medians[f]
-        im_corr = img - np.float32(med)
+        blob_sums[f] = result["sums"]
+        blob_counts[f] = result["counts"]
+        blob_track_lengths[f] = result["track_lengths"]
+        blob_ginis[f] = result["ginis"]
 
-        labels_idx = np.arange(1, n_blobs + 1)
-        sums = ndi_sum(im_corr, lab_img, labels_idx)
-        counts = ndi_sum(np.ones(lab_img.shape, dtype=np.uint8), lab_img, labels_idx).astype(int)
-        track_lengths = np.zeros(n_blobs, dtype=np.float32)
-        ginis = np.zeros(n_blobs, dtype=np.float32)
-    
-        for blob_label in labels_idx:
-            blob_mask = (lab_img == blob_label)
-    
-            # coords of all pixels in this blob
-            blob_coords = np.argwhere(blob_mask)
-    
-            # background-subtracted signal values for this blob
-            blob_vals = im_corr[blob_mask]
-    
-            track_lengths[blob_label - 1] = _blob_track_length(blob_coords)
-            ginis[blob_label - 1] = _gini_coefficient(blob_vals)
-    
-        blob_sums[f] = sums
-        blob_counts[f] = counts
-        blob_track_lengths[f] = track_lengths
-        blob_ginis[f] = ginis
+        hit_blob_label[idxs] = result["hit_labels"]
 
-        hit_blob_label[idxs] = lab_img[coords[:, 0], coords[:, 1]]
-
-    events_aug = np.column_stack((merged_events, hit_blob_label))
+    events_aug = np.column_stack([merged_events, hit_blob_label])
 
     process_hit_worker = partial(
         process_hit,
