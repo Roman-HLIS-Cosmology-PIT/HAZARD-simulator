@@ -1,5 +1,6 @@
 {
-  "supercell_size": 32,
+  "channel_size": 32
+  "supercell_size": 128,
   "sigma_mult": 14,
   "sat_cut": 6.2,
   "sigma_thresh": 4.8
