@@ -1,3 +1,8 @@
+# script for analyzing real and simulated cosmic ray events
+# Initial creation date: 23-Mar-2026
+# Developers: Anthony Harbo Torres
+# version 0.10
+
 import os
 import time
 import json
@@ -5,8 +10,9 @@ import argparse
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from functools import partial
 from astropy.stats import sigma_clipped_stats
-from scipy.ndimage import binary_dilation, maximum_filter, label, center_of_mass
+from scipy.ndimage import binary_dilation, maximum_filter, label, center_of_mass, sum as ndi_sum
 from concurrent.futures import ThreadPoolExecutor
 from tqdm.contrib.concurrent import thread_map
 from astropy.io import fits
@@ -146,7 +152,64 @@ def merge_peaks(events, data, proximity_radius=2, max_workers=2):
 
     return np.array(merged, dtype=int)
 
+def process_hit(
+    hit,
+    data_cube,
+    medians,
+    gain_array,
+    supercell_size,
+    blob_sums,
+    blob_counts,
+):
+    frame, y, x, blob_label = hit.astype(int)
+
+    img = data_cube[frame].astype(np.int32)
+    med = medians[frame]
+
+    sc_row = y // supercell_size
+    sc_col = x // supercell_size
+    sc_gain = gain_array[sc_row, sc_col]
+
+    sum3 = _clipped_box_sum(img, y, x, radius=1)
+    sum5 = _clipped_box_sum(img, y, x, radius=2)
+
+    sum_blob = int(blob_sums[frame][blob_label - 1])
+    n_pix_blob = int(blob_counts[frame][blob_label - 1])
+
+    return {
+        "frame": f,
+        "y": y,
+        "x": x,
+        "median": med,
+        "sum3x3_DN": sum3,
+        "sum3x3_e": sum3 * sc_gain,
+        "sum5x5_DN": sum5,
+        "sum5x5_e": sum5 * sc_gain,
+        "blob_label": blob_label,
+        "blob_DN": sum_blob,
+        "blob_e": sum_blob * sc_gain,
+        "n_pix_blob": n_pix_blob,
+        "supercell_gain": sc_gain,
+    }
+
 # HELPER FUNCTIONS
+def _prep_frame(data_cube, frame_index):
+    img   = data_cube[index].astype(np.float32)
+    _, med, _ = sigma_clipped_stats(img, sigma=3.0, maxiters=15)
+    return frame_index, med
+
+def _clipped_box_sum(img, y, x, radius):
+    h, w = img.shape
+    y0, y1 = max(y - radius, 0), min(y + radius + 1, h)
+    x0, x1 = max(x - radius, 0), min(x + radius + 1, w)
+    return img[y0:y1, x0:x1].sum()
+
+def _compute_frame_median(frame_index, data_cube):
+    img = data_cube[frame_index].astype(np.float32)
+    _, med, _ = sigma_clipped_stats(img, sigma=3.0, maxiters=15)
+    return frame_index, med
+
+
 
 # MAIN FUNCTION BELOW
 def cr_analysis(fits_path, gain_path, params):
@@ -154,7 +217,8 @@ def cr_analysis(fits_path, gain_path, params):
         params = {}
 
     default_params = {
-        "supercell_size": 32,
+        "channel_size": 32,
+        "supercell_size": 128,
         "sigma_mult": 12,
         "sat_cut": 5.999,
         "sigma_thresh": 4.51,
@@ -162,6 +226,7 @@ def cr_analysis(fits_path, gain_path, params):
 
     params = {**default_params, **params}
 
+    channel_size = params["channel_size"]
     supercell_size = params["supercell_size"]
     sigma_mult = params["sigma_mult"]
     sat_cut = params["sat_cut"]
@@ -174,7 +239,7 @@ def cr_analysis(fits_path, gain_path, params):
     # load in FITS data cube and gain array, 
     # initialize size of each supercell in the gain array
     data_cube  = load_data(fits_path)
-    gain_array = np.loadtxt(gain_path)[:, 5].reshape((supercell_size, supercell_size))
+    gain_array = np.loadtxt(gain_path)[:, 5].reshape((channel_size, channel_size))
 
     #data dimensions
     Nframe, h, w = data_cube.shape
@@ -182,7 +247,7 @@ def cr_analysis(fits_path, gain_path, params):
     #check the time
     now = time.perf_counter()
     load_time = now - start_time
-    print(f"Time to load the data cube: {load_time}")
+    print(f"Time to load the data cube: {load_time}s")
 
     #enter number of available cores
     num_of_cores = os.cpu_count() + 4
@@ -213,7 +278,7 @@ def cr_analysis(fits_path, gain_path, params):
     #check the time
     badpix_search_time = time.perf_counter() - now
     total_time = time.perf_counter() - start_time
-    print(f"Time to find badpix: {badpix_search_time}; total time elapsed: {total_time}")
+    print(f"Time to find badpix: {badpix_search_time}s; total time elapsed: {total_time}s")
     now = time.perf_counter()
 
     # Print the results of each badpix mask
@@ -246,7 +311,7 @@ def cr_analysis(fits_path, gain_path, params):
     #check the time
     comb_and_comp_time = time.perf_counter() - now
     total_time = time.perf_counter() - start_time
-    print(f"Time to combine badpix masks and add adjacent pix: {comb_and_comp_time}; total time elapsed: {total_time}")
+    print(f"Time to combine badpix masks and add adjacent pix: {comb_and_comp_time}s; total time elapsed: {total_time}s")
     now = time.perf_counter()
 
     #find candidate events in the data
@@ -264,7 +329,7 @@ def cr_analysis(fits_path, gain_path, params):
     #check the time
     candidate_search_time = time.perf_counter() - now
     total_time = time.perf_counter() - start_time
-    print(f"Time to find candidate events: {candidate_search_time}; total time elapsed: {total_time}")
+    print(f"Time to find candidate events: {candidate_search_time}s; total time elapsed: {total_time}s")
     now = time.perf_counter()
 
     # unzip them into two lists
@@ -287,6 +352,7 @@ def cr_analysis(fits_path, gain_path, params):
           f"with ≥{sigma_thresh:.1f} σ cut")
     
     # merge nearby events
+    print("Merging candidate events that are spatially related")
     merged_events = merge_peaks(events, data_cube)
     events_difference = len(events) -len(merged_events)
 
@@ -295,8 +361,96 @@ def cr_analysis(fits_path, gain_path, params):
     #check the time
     verify_and_merge_time = time.perf_counter() - now
     total_time = time.perf_counter() - start_time
-    print(f"Time to find verify and merge events: {verify_and_merge_time}; total time elapsed: {total_time}")
+    print(f"Time to verify and merge events: {verify_and_merge_time}s; total time elapsed: {total_time}s")
     now = time.perf_counter()
+
+    # generate initial pandas dataframe
+    print("Computing frame medians to acquire signal background")
+    # ---- frame medians ----
+    medians = np.zeros(Nframe, dtype=float)
+
+    compute_frame_median_worker = partial(_compute_frame_median, data_cube=data_cube)
+
+    median_results = thread_map(
+        compute_frame_median_worker,
+        range(Nframe),
+        max_workers=num_of_cores,
+        desc="Computing frame medians",
+        unit="frame"
+    )
+
+    for frame_index, median in median_results:
+        medians[frame_index] = median
+
+    print("Summing up event pixels")
+    # ---- event index by frame ----
+    event_idxs = {
+        f: np.where(merged_events[:, 0] == f)[0]
+        for f in np.unique(merged_events[:, 0])
+    }
+
+    proximity_radius = 2
+    big_struct = np.ones((2 * proximity_radius + 1, 2 * proximity_radius + 1), dtype=bool)
+    small_struct = np.ones((3, 3), dtype=bool)
+
+    blob_sums = {}
+    blob_counts = {}
+    hit_blob_label = np.zeros(len(merged_events), dtype=int)
+
+    for f, idxs in event_idxs.items():
+        coords = merged_events[idxs, 1:].astype(int)
+
+        mask_peaks = np.zeros((h, w), dtype=bool)
+        mask_peaks[coords[:, 0], coords[:, 1]] = True
+
+        dil = binary_dilation(mask_peaks, structure=big_struct)
+        lab_img, n_blobs = label(dil, structure=small_struct)
+
+        img = data_cube[f].astype(np.float64)
+        med = medians[f]
+        im_corr = img - med
+
+        labels_idx = np.arange(1, n_blobs + 1)
+        sums = ndi_sum(im_corr, lab_img, labels_idx)
+        counts = ndi_sum(np.ones_like(im_corr), lab_img, labels_idx).astype(int)
+
+        blob_sums[f] = sums
+        blob_counts[f] = counts
+
+        hit_blob_label[idxs] = lab_img[coords[:, 0], coords[:, 1]]
+
+    events_aug = np.column_stack((merged_events, hit_blob_label))
+
+    process_hit_worker = partial(
+        process_hit,
+        data_cube=data_cube,
+        medians=medians,
+        gain_array=gain_array,
+        supercell_size=supercell_size,
+        blob_sums=blob_sums,
+        blob_counts=blob_counts,
+    )
+
+    rows = thread_map(
+        process_hit_worker,
+        events_aug,
+        max_workers=num_of_cores,
+        desc="Processing hits",
+        unit="hit"
+    )
+
+    print("Preparing results dataframe")
+    df = pd.DataFrame(rows)
+    print(df.head())
+
+    #check the time
+    pd_time = time.perf_counter() - now
+    total_time = time.perf_counter() - start_time
+    print(f"Time to create initial dataframe: {pd_time}s; total time elapsed: {total_time}s")
+    now = time.perf_counter()
+
+#---------end main function------
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run cr analysis pipeline")
