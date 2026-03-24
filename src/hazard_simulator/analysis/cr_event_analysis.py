@@ -1,7 +1,14 @@
+import os
+import time
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
+from astropy.stats import sigma_clipped_stats
+from scipy.ndimage import binary_dilation, label, center_of_mass
+from tqdm.contrib.concurrent import thread_map
 from astropy.io import fits
 from pathlib import Path
+
 
 
 def load_data():
@@ -25,9 +32,125 @@ def load_data():
     print("Header keys:", list(header.keys())[:10])
     return(data,gain_array,supercell_size)
 
-def main():
-    data_cube, gain_array, supercell_size = load_data()
+def compute_mask_med_frame(data, sigma_mult):
+    print("⏳ Finding hot pixels…")
+    median_img = np.median(data, axis=0)
+    mad        = np.median(np.abs(median_img - np.median(median_img)))
+    sigma_est  = 1.4826 * mad
+    thresh_med = np.median(median_img) + sigma_mult * sigma_est
+    mask_med   = median_img > thresh_med
+    print(f"✅ Done looking for hot pixels (σ={sigma_est:.3f}, thresh={thresh_med:.1f})")
+    return mask_med
 
+def compute_mask_first_frame(data, sigma_mult):
+    print("⏳ Finding very hot pixels…")
+    first_img  = data[0]
+    med_first  = np.median(first_img)
+    mad_first  = np.median(np.abs(first_img - med_first))
+    sigma_est  = 1.4826 * mad_first
+    thresh0    = med_first + sigma_mult * sigma_est
+    mask0      = first_img > thresh0
+    print(f"✅ Done looking for very hot pixels (σ={sigma_est:.3f}, thresh={thresh0:.1f})")
+    return mask0
+
+def compute_mask_no_response(data, sat_cut):
+    print("⏳ Finding non-responsive pixels…")
+    # If you wanted a row-wise tqdm you could replace the next line with a loop + tqdm
+    frame_diff = np.abs(np.diff(data, axis=0))       # (Nframe-1, 4096,4096)
+    med_diff   = np.median(frame_diff, axis=0)
+    mask_non_res   = med_diff < sat_cut
+    print(f"✅ Done looking for non-responsive pixesls (median(med_diff)={np.median(med_diff):.3e})")
+    return mask_non_res
+
+
+# HELPER FUNCTIONS
+
+
+def main():
+    #check the time
+    start_time = time.perf_counter()
+
+    # load in FITS data cube and gain array, 
+    # initialize size of each supercell in the gain array
+    data_cube, gain_array, supercell_size = load_data()
+    #data dimensions
+    Nframe, h, w = data_cube.shape
+
+    #check the time
+    now = time.perf_counter()
+    load_time = now - start_time
+    print(f"Time to load the data cube: {load_time}")
+
+    #enter number of available cores
+    num_of_cores = os.cpu_count() + 4
+    print(f"Number of cores available for parallelization = {num_of_cores - 4}")
+
+    #X-ray energy (in eV), will need this later
+    xray_en = 5898.75
+
+    # badpix parameters
+    sigma_mult = 12
+    sat_cut     = 5.999
+
+    #check the time
+    now = time.perf_counter()
+    
+    #set up a list of tasks we want to run to extract three different types
+    # of badpix (hot, very hot, unresponsive) using different params
+    tasks = [
+    (compute_mask_med_frame,   sigma_mult),
+    (compute_mask_first_frame, sigma_mult),
+    (compute_mask_no_response, sat_cut),
+    ]
+    
+    #check the time before starting 
+    print()
+    mask_hot, mask_veryhot, mask_non_res = thread_map(
+        lambda fn, param: fn(data_cube, param),
+        [fn for fn, _ in tasks],
+        [param for _, param in tasks],
+        max_workers=num_of_cores,
+        desc="Computing all masks",
+        unit="mask"
+    )
+    #check the time
+    badpix_search_time = time.perf_counter() - now
+    total_time = time.perf_counter() - start_time
+    print(f"Time to find badpix: {badpix_search_time}; total time elapsed: {total_time}")
+    now = time.perf_counter()
+
+    # Print the results of each badpix mask
+    print("🔗 Combining masks into one boolean array…")
+    base_mask = mask_hot | mask_veryhot | mask_non_res
+
+    # create a mask for pixels adjacent to a pixel with flagged response: any neighbor of the base_mask
+    print("⏳ Finding all adjacent pixels…")
+    mask_adj  = binary_dilation(base_mask, structure=np.ones((3,3)), border_value=0) & ~base_mask
+    print("✅ Done with adjacent pixel mask")
+
+    print("🔗 Combining all masks into final array…")
+    maskArray = base_mask | mask_adj
+    print("🎉 maskArray ready, shape =", maskArray.shape)
+
+    print("Comparing to percentages from Hirata, 2024, Table 2:")
+    # fractions in percent
+    frac_non_res   = mask_non_res.mean()   * 100  # mask.mean() = mask.sum() / mask.size
+    frac_hot   = mask_hot.mean()   * 100  
+    frac_veryhot = mask_veryhot.mean()       * 100  
+    frac_adj = mask_adj.mean() * 100
+    frac_all   = maskArray.mean()   * 100  # union 
+
+    print(f"Non-resp pixels: {frac_non_res:.2f}% (vs. 0.53%)")
+    print(f"Hot pixels: {frac_hot:.2f}% (vs. 0.20%)")
+    print(f"Very hot pixels: {frac_veryhot:.2f}% (vs. 0.11%)")
+    print(f"Adjacent pixels: {frac_adj:.2f}% (vs. 2.47%)")
+    print(f"Union:       {frac_all:.2f}%  (vs. 3.01%)")
+
+    #check the time
+    comb_and_comp_time = time.perf_counter() - now
+    total_time = time.perf_counter() - start_time
+    print(f"Time to combine badpix masks and add adjacent pix: {comb_and_comp_time}; total time elapsed: {total_time}")
+    now = time.perf_counter()
 
 if __name__ == "__main__":
     main()
