@@ -7,6 +7,7 @@ import pandas as pd
 from tqdm import tqdm
 from astropy.stats import sigma_clipped_stats
 from scipy.ndimage import binary_dilation, maximum_filter, label, center_of_mass
+from concurrent.futures import ThreadPoolExecutor
 from tqdm.contrib.concurrent import thread_map
 from astropy.io import fits
 from pathlib import Path
@@ -68,6 +69,83 @@ def find_peaks_for_frame(data_cube, index, badpix_mask, sigma_thresh):
     peaks  = [(index, int(y), int(x)) for y, x in zip(ys, xs)]
     return peaks, threshold
 
+def merge_peaks(events, data, proximity_radius=2, max_workers=2):
+    """
+    Merge spatially adjacent peaks within each frame.
+
+    Parameters
+    ----------
+    events : (M, 3)-ndarray of int
+        List of (frame, y, x) peaks already found.
+    data : ndarray, shape (Nframe, h, w)
+        Full FITS data cube, needed for intensity weighting.
+    proximity_radius : int
+        Merge any two peaks whose pixel-centers are within
+        `proximity_radius` in Chebyshev distance.
+
+    Returns
+    -------
+    merged : (K,3)-ndarray of int
+        New list of (frame, y, x), one per merged object.
+    """
+
+    # Pre-bucket original peaks by frame for O(1) lookup
+    events_by_frame = {
+        f: events[events[:,0] == f, 1:]
+        for f in np.unique(events[:,0])
+    }
+
+    # A 3×3 struct for the actual label() call
+    small_struct = np.ones((3,3), dtype=bool)
+    # The large footprint we use for dilation
+    big_struct   = np.ones((2*proximity_radius+1,
+                            2*proximity_radius+1), dtype=bool)
+
+    def process_frame(f):
+        coords = events_by_frame.get(f)
+        if coords is None or len(coords)==0:
+            return []
+
+        # build a 1-pixel mask of your raw hits
+        mask = np.zeros((data.shape[1], data.shape[2]), bool)
+        mask[coords[:,0], coords[:,1]] = True
+
+        # dilate by the big_struct so any hits within r pixels merge
+        mask_dil = binary_dilation(mask, structure=big_struct)
+
+        # now label the dilated mask with the 3×3 struct
+        labeled, ncomp = label(mask_dil, structure=small_struct)
+
+        # figure out which original coords belong to which label
+        labels_at_peaks = labeled[coords[:,0], coords[:,1]]
+
+        merged = []
+        for lab in range(1, ncomp+1):
+            inds = np.where(labels_at_peaks == lab)[0]
+            cluster = coords[inds]   # all (y,x) in this cluster
+
+            if len(cluster)==1:
+                y0, x0 = cluster[0]
+            else:
+                # intensity‐weighted centroid over the ORIGINAL points
+                ys = cluster[:,0].astype(float)
+                xs = cluster[:,1].astype(float)
+                ws = data[f, ys.astype(int), xs.astype(int)].astype(float)
+                y0 = int(round(np.average(ys, weights=ws)))
+                x0 = int(round(np.average(xs, weights=ws)))
+
+            merged.append((f, y0, x0))
+
+        return merged
+
+    # dispatch in parallel
+    merged = []
+    with ThreadPoolExecutor(max_workers=max_workers) as exe:
+        for sub in exe.map(process_frame, range(data.shape[0])):
+            merged.extend(sub)
+
+    return np.array(merged, dtype=int)
+
 # HELPER FUNCTIONS
 
 # MAIN FUNCTION BELOW
@@ -112,10 +190,6 @@ def cr_analysis(fits_path, gain_path, params):
 
     #X-ray energy (in eV), will need this later
     xray_en = 5898.75
-
-    # badpix parameters
-    sigma_mult = 12
-    sat_cut     = 5.999
 
     #check the time
     now = time.perf_counter()
@@ -176,7 +250,6 @@ def cr_analysis(fits_path, gain_path, params):
     now = time.perf_counter()
 
     #find candidate events in the data
-    sigma_thresh  = 4.51
     mask_expanded = maximum_filter(maskArray.astype(int), size=5) > 0
 
     # run in parallel with a tqdm bar
@@ -211,7 +284,19 @@ def cr_analysis(fits_path, gain_path, params):
 
     events = np.array(filtered_events, dtype=int)
     print(f"Found {len(events)} x-ray & cosmic-ray-like peaks "
-          f"with ≥{sigma_thresh:.1f} σ cut")    
+          f"with ≥{sigma_thresh:.1f} σ cut")
+    
+    # merge nearby events
+    merged_events = merge_peaks(events, data_cube)
+    events_difference = len(events) -len(merged_events)
+
+    print(f"{len(events)} → {len(merged_events)} merged events, a difference of {events_difference}")
+
+    #check the time
+    verify_and_merge_time = time.perf_counter() - now
+    total_time = time.perf_counter() - start_time
+    print(f"Time to find verify and merge events: {verify_and_merge_time}; total time elapsed: {total_time}")
+    now = time.perf_counter()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run cr analysis pipeline")
@@ -235,4 +320,4 @@ if __name__ == "__main__":
 
     results = cr_analysis(args.fits_path, args.gain_path, params)
 
-    print("Analysis complete.")
+    print("Cosmic ray analysis complete.")
