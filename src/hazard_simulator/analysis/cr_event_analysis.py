@@ -599,15 +599,6 @@ def cr_analysis(fits_path, gain_path, params):
     save_dataframe = params.get("save_dataframe", True)
     output_csv = params.get("output_csv", "cr_event_analysis_results.csv")
     output_parquet = params.get("output_parquet", None)
-    
-    if save_dataframe:
-        if output_csv:
-            df.to_csv(output_csv, index=False)
-            print(f"Saved dataframe to CSV: {output_csv}")
-    
-        if output_parquet:
-            df.to_parquet(output_parquet, index=False)
-            print(f"Saved dataframe to Parquet: {output_parquet}")
 
     #check the time
     pd_time = time.perf_counter() - now
@@ -615,6 +606,7 @@ def cr_analysis(fits_path, gain_path, params):
     print(f"Time to create initial dataframe: {pd_time}s; total time elapsed: {total_time}s")
     now = time.perf_counter()
     
+    # save the dataframe as an output
     # --- Build timestamp ---
     timestamp = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
     
@@ -639,11 +631,15 @@ def cr_analysis(fits_path, gain_path, params):
     if save_dataframe:
         df.to_csv(output_csv, index=False)
         print(f"Saved dataframe to: {output_csv}")
+
+        if output_parquet:
+            df.to_parquet(output_parquet, index=False)
+            print(f"Saved dataframe to Parquet: {output_parquet}")
     
     return df
 
-#---------end main function------
 
+#---------end main function------
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run cr analysis pipeline")
