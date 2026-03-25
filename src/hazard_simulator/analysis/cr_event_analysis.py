@@ -165,57 +165,73 @@ def analyze_blobs_by_frame(
 ):
     """
     Analyze all merged-event blobs in one frame.
-    Returns everything needed to build blob dictionaries and hit_blob_label.
+
+    Uses the dilated peak-label image to group nearby candidate peaks
+    into the same event, but computes blob morphology from the actual
+    positive background-subtracted signal inside each grouped region.
     """
     coords = merged_events[idxs, 1:].astype(int)
 
-    # Mark peak pixels
+    # Mark candidate event peak pixels
     mask_peaks = np.zeros((h, w), dtype=bool)
     mask_peaks[coords[:, 0], coords[:, 1]] = True
 
-    # Merge nearby peaks into blobs
+    # Dilate peaks so nearby peaks merge into the same event group
     dil = binary_dilation(mask_peaks, structure=big_struct)
+
+    # Label connected merged-event groups
     lab_img, n_blobs = label(dil, structure=small_struct)
 
-    # Background-subtracted working image
+    # Build one working background-subtracted image for this frame
     im_corr = data_cube[f].astype(np.float32, copy=True)
     im_corr -= np.float32(medians[f])
 
-    labels_idx = np.arange(1, n_blobs + 1)
-
-    # Blob sums and counts
-    sums = ndi_sum(im_corr, lab_img, labels_idx)
-    counts = np.bincount(lab_img.ravel(), minlength=n_blobs + 1)[1:]
-
-    # Per-blob morphology
+    # Initialize morphology/stat arrays; these will now be based on the
+    # actual signal mask, not on the raw dilation footprint.
+    sums = np.zeros(n_blobs, dtype=np.float32)
+    counts = np.zeros(n_blobs, dtype=int)
     track_lengths = np.zeros(n_blobs, dtype=np.float32)
     ginis = np.zeros(n_blobs, dtype=np.float32)
 
-    # Bounding boxes for each blob label
+    # Bounding boxes for each labeled blob
     blob_slices = find_objects(lab_img)
 
     for blob_label, slc in enumerate(blob_slices, start=1):
         if slc is None:
             continue
 
-        lab_sub = lab_img[slc]
+        lab_sub = lab_img[slc] # "lab_sub" means the labeled-image subarray
+
+        # Matching subimage from the background-subtracted frame
         im_sub = im_corr[slc]
 
-        local_mask = (lab_sub == blob_label)
+        # Group-membership mask from the dilation/labeling step
+        group_mask = (lab_sub == blob_label)
 
-        # local coords inside the box
-        local_coords = np.argwhere(local_mask)
+        # Physical signal footprint within this grouped region
+        signal_mask = group_mask & (im_sub > 0)
 
-        # shift to full-image coords
-        local_coords[:, 0] += slc[0].start
-        local_coords[:, 1] += slc[1].start
+        # Fallback in case no pixels survive the positive-signal cut
+        if not np.any(signal_mask):
+            signal_mask = group_mask
 
-        blob_vals = im_sub[local_mask]
+        # Coordinates of footprint pixels in subimage coordinates
+        blob_coords = np.argwhere(signal_mask)
 
-        track_lengths[blob_label - 1] = _blob_track_length(local_coords)
+        # Convert to full-frame coordinates
+        blob_coords[:, 0] += slc[0].start
+        blob_coords[:, 1] += slc[1].start
+
+        # Background-subtracted signal values in this blob
+        blob_vals = im_sub[signal_mask]
+
+        # Blob properties based on the signal footprint
+        sums[blob_label - 1] = float(np.sum(blob_vals))
+        counts[blob_label - 1] = int(signal_mask.sum())
+        track_lengths[blob_label - 1] = _blob_track_length(blob_coords)
         ginis[blob_label - 1] = _gini_coefficient(blob_vals)
 
-    # Which blob each merged event belongs to
+    # Map each merged event center to its grouped blob label
     hit_labels = lab_img[coords[:, 0], coords[:, 1]]
 
     return {
