@@ -1,7 +1,7 @@
 # script for analyzing real and simulated cosmic ray events
 # Initial creation date: 23-Mar-2026
 # Developers: Anthony Harbo Torres
-# version 0.11
+# version 0.12
 
 import os
 import time
