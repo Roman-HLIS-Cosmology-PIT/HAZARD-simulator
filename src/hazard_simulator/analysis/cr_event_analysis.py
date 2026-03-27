@@ -11,10 +11,17 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from functools import partial
-from astropy.stats import sigma_clipped_stats
-from scipy.ndimage import binary_dilation, maximum_filter, label, find_objects, sum as ndi_sum
+from scipy.ndimage import (
+    binary_dilation,
+    binary_closing,
+    maximum_filter,
+    label,
+    find_objects,
+    sum as ndi_sum,
+)
 from concurrent.futures import ThreadPoolExecutor
 from tqdm.contrib.concurrent import thread_map
+from astropy.stats import sigma_clipped_stats
 from astropy.io import fits
 from pathlib import Path
 
@@ -147,10 +154,107 @@ def merge_peaks(events, data, proximity_radius=2, max_workers=2):
     # dispatch in parallel
     merged = []
     with ThreadPoolExecutor(max_workers=max_workers) as exe:
-        for sub in exe.map(process_frame, range(data.shape[0])):
+        for sub in tqdm(
+            exe.map(process_frame, range(data.shape[0])),
+            total=data.shape[0],
+            desc="Processing frames",
+            unit="frame"
+        ):
             merged.extend(sub)
 
     return np.array(merged, dtype=int)
+
+def build_signal_mask(im_corr, blob_signal_thresh=0.0):
+    """
+    Build a binary mask of signal-bearing pixels from a background-subtracted image.
+
+    Parameters
+    ----------
+    im_corr : 2D ndarray
+        Background-subtracted frame.
+    blob_signal_thresh : float
+        Threshold for including pixels in the signal mask.
+
+    Returns
+    -------
+    signal_mask : 2D boolean ndarray
+    """
+    signal_mask = im_corr > blob_signal_thresh
+
+    return signal_mask
+
+def assign_peaks_to_labels(coords, lab_img, search_radius=2):
+    """
+    Assign each peak coordinate to a nearby nonzero label in lab_img.
+
+    If the exact peak pixel has label 0, search a small neighborhood
+    for the nearest labeled pixel.
+
+    Returns
+    -------
+    labels : 1D int ndarray
+    """
+    h, w = lab_img.shape
+    labels = np.zeros(len(coords), dtype=int)
+
+    for i, (y, x) in enumerate(coords):
+        label0 = lab_img[y, x]
+        if label0 != 0:
+            labels[i] = label0
+            continue
+
+        y0 = max(0, y - search_radius)
+        y1 = min(h, y + search_radius + 1)
+        x0 = max(0, x - search_radius)
+        x1 = min(w, x + search_radius + 1)
+
+        patch = lab_img[y0:y1, x0:x1]
+        nonzero = np.argwhere(patch > 0)
+
+        if nonzero.size == 0:
+            labels[i] = 0
+            continue
+
+        # nearest labeled pixel in the local patch
+        dy = nonzero[:, 0] + y0 - y
+        dx = nonzero[:, 1] + x0 - x
+        d2 = dy * dy + dx * dx
+        j = np.argmin(d2)
+
+        yy = nonzero[j, 0] + y0
+        xx = nonzero[j, 1] + x0
+        labels[i] = lab_img[yy, xx]
+
+    return labels
+
+def build_event_neighborhood_mask(coords, h, w, radius=12):
+    """
+    Build a boolean mask that is True only in square neighborhoods around
+    merged-event peak coordinates.
+
+    Parameters
+    ----------
+    coords : (N, 2) ndarray
+        Event coordinates as (y, x).
+    h, w : int
+        Frame shape.
+    radius : int
+        Half-size of the neighborhood box around each event.
+
+    Returns
+    -------
+    mask : 2D boolean ndarray
+    """
+    mask = np.zeros((h, w), dtype=bool)
+
+    for y, x in coords:
+        y0 = max(0, y - radius)
+        y1 = min(h, y + radius + 1)
+        x0 = max(0, x - radius)
+        x1 = min(w, x + radius + 1)
+        mask[y0:y1, x0:x1] = True
+
+    return mask
 
 def analyze_blobs_by_frame(
     f,
@@ -160,90 +264,168 @@ def analyze_blobs_by_frame(
     medians,
     h,
     w,
-    big_struct,
     small_struct,
+    blob_signal_thresh=6.5,   # used as grow_thresh now
+    peak_assign_radius=2,
+    seed_thresh=25.0,
+    grow_thresh=None,
+    event_neighborhood_radius=9,
+    seed_radius=1,
+    max_seed_link_dist=9.0,
+    bridge_min_frac=0.7,
+    elongated_merge_aspect=3.0,
 ):
-    """
-    Analyze all merged-event blobs in one frame.
-
-    Uses the dilated peak-label image to group nearby candidate peaks
-    into the same event, but computes blob morphology from the actual
-    positive background-subtracted signal inside each grouped region.
-    """
+    t_frame_start = time.perf_counter()
+    # Setup + preprocessing
+    t0 = time.perf_counter()
+    
     coords = merged_events[idxs, 1:].astype(int)
 
-    # Mark candidate event peak pixels
-    mask_peaks = np.zeros((h, w), dtype=bool)
-    mask_peaks[coords[:, 0], coords[:, 1]] = True
-
-    # Dilate peaks so nearby peaks merge into the same event group
-    dil = binary_dilation(mask_peaks, structure=big_struct)
-
-    # Label connected merged-event groups
-    lab_img, n_blobs = label(dil, structure=small_struct)
-
-    # Build one working background-subtracted image for this frame
+    # Background-subtracted frame
     im_corr = data_cube[f].astype(np.float32, copy=True)
     im_corr -= np.float32(medians[f])
 
-    # Initialize morphology/stat arrays; these will now be based on the
-    # actual signal mask, not on the raw dilation footprint.
+    if grow_thresh is None:
+        grow_thresh = blob_signal_thresh
+
+    # crop to ROI
+    y0, y1, x0, x1 = build_event_roi(
+        coords, h, w, radius=event_neighborhood_radius, pad=2
+    )
+
+    im_roi = im_corr[y0:y1, x0:x1]
+    coords_roi = coords.copy()
+    coords_roi[:, 0] -= y0
+    coords_roi[:, 1] -= x0
+    h_roi, w_roi = im_roi.shape
+
+    t1 = time.perf_counter()
+
+    # Neighborhood + grow mask
+    t_mask_start = time.perf_counter()
+
+    # Restrict analysis to ROI neighborhoods near merged peaks
+    event_neighborhood_mask = build_event_neighborhood_mask(
+        coords_roi, h_roi, w_roi, radius=event_neighborhood_radius
+    )
+
+
+    t_mask_end = time.perf_counter()
+
+    # Build smart seeded labels
+    t_label_start = time.perf_counter()
+
+
+    lab_img_roi = build_smart_seeded_labels(
+        im_corr=im_roi,
+        coords=coords_roi,
+        neighborhood_mask=event_neighborhood_mask,
+        seed_thresh=seed_thresh,
+        grow_thresh=grow_thresh,
+        small_struct=small_struct,
+        seed_radius=seed_radius,
+        max_seed_link_dist=max_seed_link_dist,
+        bridge_min_frac=bridge_min_frac,
+        elongated_merge_aspect=elongated_merge_aspect,
+    )
+
+    t_label_end = time.perf_counter()
+
+    n_blobs = int(lab_img_roi.max())
+
+    # Blob metrics (PCA + gini)
+    t_metrics_start = time.perf_counter()
+
+    # Blob-level arrays
     sums = np.zeros(n_blobs, dtype=np.float32)
     counts = np.zeros(n_blobs, dtype=int)
-    track_lengths = np.zeros(n_blobs, dtype=np.float32)
+    major_extents = np.zeros(n_blobs, dtype=np.float32)
+    minor_extents = np.zeros(n_blobs, dtype=np.float32)
+    aspect_ratios = np.zeros(n_blobs, dtype=np.float32)
+    orientations = np.zeros(n_blobs, dtype=np.float32)
     ginis = np.zeros(n_blobs, dtype=np.float32)
 
-    # Bounding boxes for each labeled blob
-    blob_slices = find_objects(lab_img)
+    blob_slices = find_objects(lab_img_roi)
 
     for blob_label, slc in enumerate(blob_slices, start=1):
         if slc is None:
             continue
 
-        lab_sub = lab_img[slc] # "lab_sub" means the labeled-image subarray
+        # labeled-image subarray
+        lab_sub = lab_img_roi[slc]
 
         # Matching subimage from the background-subtracted frame
-        im_sub = im_corr[slc]
+        im_sub = im_roi[slc]
 
-        # Group-membership mask from the dilation/labeling step
-        group_mask = (lab_sub == blob_label)
+        blob_mask = (lab_sub == blob_label)
 
-        # Physical signal footprint within this grouped region
-        signal_mask = group_mask & (im_sub > 0)
-
-        # Fallback in case no pixels survive the positive-signal cut
-        if not np.any(signal_mask):
-            signal_mask = group_mask
-
-        # Coordinates of footprint pixels in subimage coordinates
-        blob_coords = np.argwhere(signal_mask)
-
-        # Convert to full-frame coordinates
+        blob_coords = np.argwhere(blob_mask)
         blob_coords[:, 0] += slc[0].start
         blob_coords[:, 1] += slc[1].start
 
-        # Background-subtracted signal values in this blob
-        blob_vals = im_sub[signal_mask]
+        blob_vals = im_sub[blob_mask]
+        blob_vals_pos = np.clip(blob_vals, 0.0, None)
 
-        # Blob properties based on the signal footprint
         sums[blob_label - 1] = float(np.sum(blob_vals))
-        counts[blob_label - 1] = int(signal_mask.sum())
-        track_lengths[blob_label - 1] = _blob_track_length(blob_coords)
+        counts[blob_label - 1] = int(blob_mask.sum())
+
+        n_blob_pix = blob_coords.shape[0]
+
+        if n_blob_pix > 10000:
+            print(f"Warning: frame {f}, blob {blob_label} has {n_blob_pix} pixels")
+            major_extents[blob_label - 1] = np.nan
+            minor_extents[blob_label - 1] = np.nan
+            aspect_ratios[blob_label - 1] = np.nan
+            orientations[blob_label - 1] = np.nan
+        else:
+            metrics = blob_pca_metrics(blob_coords, weights=blob_vals_pos)
+            major_extents[blob_label - 1] = metrics["major_extent_pix"]
+            minor_extents[blob_label - 1] = metrics["minor_extent_pix"]
+            aspect_ratios[blob_label - 1] = metrics["aspect_ratio"]
+            orientations[blob_label - 1] = metrics["orientation_deg"]
+
         ginis[blob_label - 1] = _gini_coefficient(blob_vals)
 
-    # Map each merged event center to its grouped blob label
-    hit_labels = lab_img[coords[:, 0], coords[:, 1]]
+    t_metrics_end = time.perf_counter()
+
+    # Assign peaks to labels
+    t_assign_start = time.perf_counter()
+
+    # Each merged peak gets assigned to the final smart label image
+    # using ROI-local coordinates, since lab_img_roi is ROI-sized.
+    hit_labels = assign_peaks_to_labels(
+        coords_roi,
+        lab_img_roi,
+        search_radius=peak_assign_radius,
+    )
+
+    t_assign_end = time.perf_counter()
+
+    t_frame_end = time.perf_counter()
+
+    # PRINT TIMING SUMMARY
+    print(
+        f"[Frame {f}] "
+        f"setup={t1 - t0:.2f}s | "
+        f"mask={t_mask_end - t_mask_start:.2f}s | "
+        f"label={t_label_end - t_label_start:.2f}s | "
+        f"metrics={t_metrics_end - t_metrics_start:.2f}s | "
+        f"assign={t_assign_end - t_assign_start:.2f}s | "
+        f"TOTAL={t_frame_end - t_frame_start:.2f}s"
+    )
 
     return {
         "frame": f,
         "idxs": idxs,
         "sums": sums,
         "counts": counts,
-        "track_lengths": track_lengths,
+        "major_extents": major_extents,
+        "minor_extents": minor_extents,
+        "aspect_ratios": aspect_ratios,
+        "orientations": orientations,
         "ginis": ginis,
         "hit_labels": hit_labels,
     }
-
 
 def process_hit(
     hit,
@@ -253,7 +435,10 @@ def process_hit(
     supercell_size,
     blob_sums,
     blob_counts,
-    blob_track_lengths,
+    blob_major_extents,
+    blob_minor_extents,
+    blob_aspect_ratios,
+    blob_orientations,
     blob_ginis,
 ):
     frame, y, x, blob_label = hit.astype(int)
@@ -270,7 +455,12 @@ def process_hit(
 
     sum_blob = int(blob_sums[frame][blob_label - 1])
     n_pix_blob = int(blob_counts[frame][blob_label - 1])
-    track_length_blob = float(blob_track_lengths[frame][blob_label - 1])
+
+    major_blob = float(blob_major_extents[frame][blob_label - 1])
+    minor_blob = float(blob_minor_extents[frame][blob_label - 1])
+    aspect_blob = float(blob_aspect_ratios[frame][blob_label - 1])
+    orient_blob = float(blob_orientations[frame][blob_label - 1])
+
     gini_blob = float(blob_ginis[frame][blob_label - 1])
 
     return {
@@ -286,11 +476,310 @@ def process_hit(
         "blob_DN": sum_blob,
         "blob_e": sum_blob * sc_gain,
         "n_pix_blob": n_pix_blob,
-        "track_length_pix": track_length_blob,
-        "track_length_um": track_length_blob * 10.0,
+        "major_extent_pix": major_blob,
+        "major_extent_um": major_blob * 10.0,
+        "minor_extent_pix": minor_blob,
+        "minor_extent_um": minor_blob * 10.0,
+        "aspect_ratio_blob": aspect_blob,
+        "orientation_deg_blob": orient_blob,
         "gini_blob": gini_blob,
         "supercell_gain": sc_gain,
     }
+
+def _line_bridge_score(p0, p1, mask):
+    """
+    Fraction of sampled points along the line from p0 to p1 that fall on True pixels in mask.
+
+    Parameters
+    ----------
+    p0, p1 : iterable of length 2
+        (y, x) endpoints
+    mask : 2D boolean ndarray
+
+    Returns
+    -------
+    score : float in [0, 1]
+    """
+    y0, x0 = p0
+    y1, x1 = p1
+
+    dy = y1 - y0
+    dx = x1 - x0
+    n = int(max(abs(dy), abs(dx))) + 1
+    if n <= 1:
+        return 1.0
+
+    ys = np.rint(np.linspace(y0, y1, n)).astype(int)
+    xs = np.rint(np.linspace(x0, x1, n)).astype(int)
+
+    h, w = mask.shape
+    ys = np.clip(ys, 0, h - 1)
+    xs = np.clip(xs, 0, w - 1)
+
+    return float(np.mean(mask[ys, xs]))
+
+
+def _component_seed_groups(
+    cc_mask,
+    coords_in_cc,
+    local_seed_ids,
+    grow_mask,
+    max_seed_link_dist=9.0,
+    bridge_min_frac=0.7,
+    elongated_merge_aspect=3.0,
+):
+    """
+    Decide how seeds inside one low-threshold connected component should be grouped.
+
+    Strategy
+    --------
+    1. If only one seed is present -> one group.
+    2. If the component is elongated, allow more aggressive seed merging.
+    3. Merge two seeds if:
+       - they are not too far apart, and
+       - the line between them is mostly supported by grow_mask
+         OR the component is strongly elongated.
+
+    Returns
+    -------
+    groups : list[list[int]]
+        Each inner list contains seed ids that should become one event group.
+    """
+    if len(local_seed_ids) <= 1:
+        return [list(local_seed_ids)]
+
+    cc_coords = np.argwhere(cc_mask)
+    cc_metrics = blob_pca_metrics(cc_coords)
+    cc_aspect = cc_metrics["aspect_ratio"]
+
+    seed_pts = np.array([coords_in_cc[sid] for sid in local_seed_ids], dtype=float)
+    n = len(local_seed_ids)
+
+    # simple union-find
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i, j):
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[rj] = ri
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            p0 = seed_pts[i]
+            p1 = seed_pts[j]
+            dist = float(np.hypot(*(p1 - p0)))
+
+            if dist > max_seed_link_dist:
+                continue
+
+            bridge_score = _line_bridge_score(p0, p1, grow_mask)
+
+            # Merge if strongly bridged, or if the whole component is very elongated
+            # and the seeds are not too far apart.
+            if (bridge_score >= bridge_min_frac) or (
+                cc_aspect >= elongated_merge_aspect and dist <= 0.75 * max_seed_link_dist
+            ):
+                union(i, j)
+
+    groups_dict = {}
+    for i, sid in enumerate(local_seed_ids):
+        root = find(i)
+        groups_dict.setdefault(root, []).append(sid)
+
+    return list(groups_dict.values())
+
+
+def build_smart_seeded_labels(
+    im_corr,
+    coords,
+    neighborhood_mask=None,
+    seed_thresh=25.0,
+    grow_thresh=6.5,
+    small_struct=None,
+    seed_radius=1,
+    max_seed_link_dist=9.0,
+    bridge_min_frac=0.7,
+    elongated_merge_aspect=3.0,
+):
+    """
+    Build event labels using a smart seeded-growth strategy.
+
+    Pipeline
+    --------
+    1. Build a low-threshold grow mask.
+    2. Build initial seeds near each merged-event coordinate.
+    3. For each connected component of the grow mask:
+       - if one seed is present, keep it as one label
+       - if multiple seeds are present, decide whether to merge them into
+         groups using bridge support / elongation
+       - if more than one final seed-group remains, split the component by
+         nearest-group assignment
+
+    Returns
+    -------
+    label_img : 2D int ndarray
+    """
+    h, w = im_corr.shape
+    coords = np.asarray(coords, dtype=int)
+
+    if small_struct is None:
+        small_struct = np.ones((3, 3), dtype=bool)
+
+    grow_mask = im_corr > grow_thresh
+    if neighborhood_mask is not None:
+        grow_mask &= neighborhood_mask
+
+    # Find one local seed pixel per merged-event coord
+    # seed_id here is local to this frame's coords array: 0..len(coords)-1
+    seed_pixels = {}
+    for seed_id, (y, x) in enumerate(coords):
+        y0 = max(0, y - seed_radius)
+        y1 = min(h, y + seed_radius + 1)
+        x0 = max(0, x - seed_radius)
+        x1 = min(w, x + seed_radius + 1)
+
+        patch = im_corr[y0:y1, x0:x1]
+        seed_patch = patch > seed_thresh
+
+        if np.any(seed_patch):
+            locs = np.argwhere(seed_patch)
+            vals = patch[seed_patch]
+            k = int(np.argmax(vals))
+            yy, xx = locs[k]
+            seed_pixels[seed_id] = np.array([y0 + yy, x0 + xx], dtype=int)
+        else:
+            # fallback: use original coord if it is inside the grow mask
+            if 0 <= y < h and 0 <= x < w and grow_mask[y, x]:
+                seed_pixels[seed_id] = np.array([y, x], dtype=int)
+
+    # Connected components of the grow mask
+    cc_img, n_cc = label(grow_mask, structure=small_struct)
+    label_img = np.zeros((h, w), dtype=np.int32)
+
+    next_label = 1
+
+    # Assign each seed to its connected component exactly once
+    # seed_cc_ids[sid] = cc_id containing that seed, or 0 if none
+   
+    seed_cc_ids = np.zeros(len(coords), dtype=np.int32)
+    for sid, yx in seed_pixels.items():
+        y, x = yx
+        seed_cc_ids[sid] = cc_img[y, x]
+
+    # Build reverse lookup: cc_id -> list of seed ids in that component
+    seeds_by_cc = {}
+    for sid, cc_id in enumerate(seed_cc_ids):
+        if cc_id <= 0:
+            continue
+        seeds_by_cc.setdefault(cc_id, []).append(sid)
+
+    # Component bounding boxes
+    cc_slices = find_objects(cc_img)
+
+    # Process each component using its slice only
+    for cc_id, slc in enumerate(cc_slices, start=1):
+        if slc is None:
+            continue
+
+        local_seed_ids = seeds_by_cc.get(cc_id, [])
+        if len(local_seed_ids) == 0:
+            continue
+
+        ysl, xsl = slc
+        cc_sub = (cc_img[ysl, xsl] == cc_id)
+        grow_sub = grow_mask[ysl, xsl]
+        label_sub = label_img[ysl, xsl]
+
+        cc_pts = np.argwhere(cc_sub)
+        n_cc_pix = cc_pts.shape[0]
+
+        max_component_pixels = 10000
+        max_component_seeds = 18
+
+        # Cheap bailout before expensive grouping
+        if n_cc_pix > max_component_pixels:
+            label_sub[cc_sub] = next_label
+            print(
+                f"Max component pixels exceeded on cc_id {cc_id} "
+                f"[# pix = {n_cc_pix}], assigning label {next_label}"
+            )
+            next_label += 1
+            continue
+
+        if len(local_seed_ids) > max_component_seeds:
+            label_sub[cc_sub] = next_label
+            print(
+                f"Max component seeds exceeded on cc_id {cc_id} "
+                f"[# seeds = {len(local_seed_ids)}], assigning label {next_label}"
+            )
+            next_label += 1
+            continue
+
+        # Convert seed coordinates into the LOCAL coordinate system
+        # of this component slice, so they match cc_sub and grow_sub.
+        coords_in_cc_local = {
+            sid: np.array(
+                [
+                    seed_pixels[sid][0] - ysl.start,
+                    seed_pixels[sid][1] - xsl.start,
+                ],
+                dtype=int,
+            )
+            for sid in local_seed_ids
+        }
+
+        # Smart grouping of seeds inside this connected component
+        seed_groups = _component_seed_groups(
+            cc_mask=cc_sub,
+            coords_in_cc=coords_in_cc_local,
+            local_seed_ids=local_seed_ids,
+            grow_mask=grow_sub,
+            max_seed_link_dist=max_seed_link_dist,
+            bridge_min_frac=bridge_min_frac,
+            elongated_merge_aspect=elongated_merge_aspect,
+        )
+
+        if len(seed_groups) == 1:
+            label_sub[cc_sub] = next_label
+            next_label += 1
+            continue
+
+        # Otherwise split the component by nearest seed-group
+        group_seed_pts = []
+        for group in seed_groups:
+            pts = np.array([coords_in_cc_local[sid] for sid in group], dtype=float)
+            group_seed_pts.append(pts)
+
+        for yy, xx in cc_pts:
+            best_group = None
+            best_d2 = np.inf
+
+            p = np.array([yy, xx], dtype=float)
+
+            for gi, pts in enumerate(group_seed_pts):
+                d2 = np.min(np.sum((pts - p) ** 2, axis=1))
+                if d2 < best_d2:
+                    best_d2 = d2
+                    best_group = gi
+
+            label_sub[yy, xx] = next_label + best_group
+
+        next_label += len(seed_groups)
+
+    return label_img
+
+def build_event_roi(coords, h, w, radius=12, pad=2):
+    y_min = max(0, coords[:, 0].min() - radius - pad)
+    y_max = min(h, coords[:, 0].max() + radius + pad + 1)
+    x_min = max(0, coords[:, 1].min() - radius - pad)
+    x_max = min(w, coords[:, 1].max() + radius + pad + 1)
+    return y_min, y_max, x_min, x_max
 
 # HELPER FUNCTIONS
 def _prep_frame(data_cube, frame_index):
@@ -334,22 +823,93 @@ def _gini_coefficient(values):
     return (np.sum((2 * index - n - 1) * x)) / (n * np.sum(x))
 
 
-def _blob_track_length(coords):
+def blob_pca_metrics(coords, weights=None):
     """
-    Maximum Euclidean separation between any two blob pixels.
-    coords should be an (N, 2) array of (y, x) pixel coordinates.
-    Returns length in pixels.
+    Compute PCA-based morphology metrics for a set of (y, x) pixel coordinates.
+
+    Parameters
+    ----------
+    coords : (N, 2) array
+        Pixel coordinates as (y, x).
+    weights : (N,) array or None
+        Optional nonnegative weights, e.g. background-subtracted signal values.
+        If provided, weighted centroid/covariance is used.
+
+    Returns
+    -------
+    metrics : dict with keys
+        major_extent_pix
+        minor_extent_pix
+        aspect_ratio
+        orientation_deg
     """
     coords = np.asarray(coords, dtype=np.float64)
-    n = len(coords)
 
-    if n <= 1:
-        return 0.0
+    if coords.ndim != 2 or coords.shape[0] == 0:
+        return {
+            "major_extent_pix": 0.0,
+            "minor_extent_pix": 0.0,
+            "aspect_ratio": 1.0,
+            "orientation_deg": 0.0,
+        }
 
-    # Cheap exact method for typical small blobs
-    diffs = coords[:, None, :] - coords[None, :, :]
-    d2 = np.sum(diffs * diffs, axis=-1)
-    return float(np.sqrt(np.max(d2)))
+    if coords.shape[0] == 1:
+        return {
+            "major_extent_pix": 0.0,
+            "minor_extent_pix": 0.0,
+            "aspect_ratio": 1.0,
+            "orientation_deg": 0.0,
+        }
+
+    YX = coords.astype(np.float64)
+
+    if weights is None:
+        center = YX.mean(axis=0)
+        Xc = YX - center
+        cov = (Xc.T @ Xc) / max(len(Xc), 1)
+    else:
+        w = np.asarray(weights, dtype=np.float64)
+        w = np.clip(w, 0.0, None)
+
+        if np.sum(w) <= 0:
+            center = YX.mean(axis=0)
+            Xc = YX - center
+            cov = (Xc.T @ Xc) / max(len(Xc), 1)
+        else:
+            wsum = np.sum(w)
+            center = np.sum(YX * w[:, None], axis=0) / wsum
+            Xc = YX - center
+            cov = (Xc.T @ (Xc * w[:, None])) / wsum
+
+    evals, evecs = np.linalg.eigh(cov)
+    order = np.argsort(evals)[::-1]
+    evecs = evecs[:, order]
+
+    major_axis = evecs[:, 0]
+    minor_axis = evecs[:, 1]
+
+    proj_major = Xc @ major_axis
+    proj_minor = Xc @ minor_axis
+
+    major_extent = float(proj_major.max() - proj_major.min())
+    minor_extent = float(proj_minor.max() - proj_minor.min())
+
+    aspect_ratio = (
+        major_extent / minor_extent
+        if minor_extent > 0 else np.inf
+    )
+
+    # angle of major axis relative to +x direction
+    # coords are (y,x), so convert carefully
+    dy, dx = major_axis[0], major_axis[1]
+    orientation_deg = float(np.degrees(np.arctan2(dy, dx)))
+
+    return {
+        "major_extent_pix": major_extent,
+        "minor_extent_pix": minor_extent,
+        "aspect_ratio": aspect_ratio,
+        "orientation_deg": orientation_deg,
+    }
 
 
 # MAIN FUNCTION BELOW
@@ -545,17 +1105,30 @@ def cr_analysis(fits_path, gain_path, params):
         for f in np.unique(merged_events[:, 0])
     }
 
-    proximity_radius = 2
-    big_struct = np.ones((2 * proximity_radius + 1, 2 * proximity_radius + 1), dtype=bool)
+
     small_struct = np.ones((3, 3), dtype=bool)
 
     blob_sums = {}
     blob_counts = {}
-    blob_track_lengths = {}
+    blob_major_extents = {}
+    blob_minor_extents = {}
+    blob_aspect_ratios = {}
+    blob_orientations = {}
     blob_ginis = {}
     hit_blob_label = np.zeros(len(merged_events), dtype=int)
 
     frame_items = list(event_idxs.items())
+    blob_signal_thresh =  5.0
+    peak_assign_radius =  2
+
+
+    seed_thresh = params.get("seed_thresh", 20.0)
+    grow_thresh = params.get("grow_thresh", blob_signal_thresh)
+    event_neighborhood_radius = params.get("event_neighborhood_radius", 12)
+    seed_radius = params.get("seed_radius", 1)
+    max_seed_link_dist = params.get("max_seed_link_dist", 12.0)
+    bridge_min_frac = params.get("bridge_min_frac", 0.7)
+    elongated_merge_aspect = params.get("elongated_merge_aspect", 3.0)
 
     blob_results = thread_map(
         lambda item: analyze_blobs_by_frame(
@@ -566,8 +1139,16 @@ def cr_analysis(fits_path, gain_path, params):
             medians=medians,
             h=h,
             w=w,
-            big_struct=big_struct,
             small_struct=small_struct,
+            blob_signal_thresh=blob_signal_thresh,
+            peak_assign_radius=peak_assign_radius,
+            seed_thresh=seed_thresh,
+            grow_thresh=grow_thresh,
+            event_neighborhood_radius=event_neighborhood_radius,
+            seed_radius=seed_radius,
+            max_seed_link_dist=max_seed_link_dist,
+            bridge_min_frac=bridge_min_frac,
+            elongated_merge_aspect=elongated_merge_aspect,
         ),
         frame_items,
         max_workers=blob_workers,
@@ -581,7 +1162,10 @@ def cr_analysis(fits_path, gain_path, params):
 
         blob_sums[f] = result["sums"]
         blob_counts[f] = result["counts"]
-        blob_track_lengths[f] = result["track_lengths"]
+        blob_major_extents[f] = result["major_extents"]
+        blob_minor_extents[f] = result["minor_extents"]
+        blob_aspect_ratios[f] = result["aspect_ratios"]
+        blob_orientations[f] = result["orientations"]
         blob_ginis[f] = result["ginis"]
 
         hit_blob_label[idxs] = result["hit_labels"]
@@ -596,7 +1180,10 @@ def cr_analysis(fits_path, gain_path, params):
         supercell_size=supercell_size,
         blob_sums=blob_sums,
         blob_counts=blob_counts,
-        blob_track_lengths=blob_track_lengths,
+        blob_major_extents=blob_major_extents,
+        blob_minor_extents=blob_minor_extents,
+        blob_aspect_ratios=blob_aspect_ratios,
+        blob_orientations=blob_orientations,
         blob_ginis=blob_ginis,
     )
 
