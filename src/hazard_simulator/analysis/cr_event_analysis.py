@@ -1,7 +1,7 @@
 # script for analyzing real and simulated cosmic ray events
 # Initial creation date: 23-Mar-2026
 # Developers: Anthony Harbo Torres
-# version 0.12
+# version 0.11
 
 import os
 import time
@@ -825,27 +825,36 @@ def _gini_coefficient(values):
 
 def blob_pca_metrics(coords, weights=None):
     """
-    Compute PCA-based morphology metrics for a set of (y, x) pixel coordinates.
+    Compute PCA-based morphology metrics for a set of blob pixels.
 
     Parameters
     ----------
-    coords : (N, 2) array
-        Pixel coordinates as (y, x).
+    coords : either
+        - (N, 2) array of (y, x) pixel coordinates, or
+        - 2D mask array, where nonzero pixels define the blob
     weights : (N,) array or None
-        Optional nonnegative weights, e.g. background-subtracted signal values.
-        If provided, weighted centroid/covariance is used.
+        Optional nonnegative weights for coordinate inputs.
+        If coords is a mask, weights are ignored unless you later add
+        explicit support for weighted masks.
 
     Returns
     -------
-    metrics : dict with keys
-        major_extent_pix
-        minor_extent_pix
-        aspect_ratio
-        orientation_deg
+    metrics : dict
     """
-    coords = np.asarray(coords, dtype=np.float64)
+    arr = np.asarray(coords)
 
-    if coords.ndim != 2 or coords.shape[0] == 0:
+    # Accept mask input directly
+    if arr.ndim == 2 and arr.shape[1] != 2:
+        coords = np.argwhere(arr > 0).astype(np.float64)
+        weights = None
+    else:
+        coords = np.asarray(arr, dtype=np.float64)
+
+    # Strict shape check for coordinate input
+    if coords.ndim != 2 or coords.shape[1] != 2:
+        raise ValueError("blob_pca_metrics expects either a 2D mask or an (N,2) coordinate array.")
+
+    if coords.shape[0] == 0:
         return {
             "major_extent_pix": 0.0,
             "minor_extent_pix": 0.0,
@@ -855,8 +864,8 @@ def blob_pca_metrics(coords, weights=None):
 
     if coords.shape[0] == 1:
         return {
-            "major_extent_pix": 0.0,
-            "minor_extent_pix": 0.0,
+            "major_extent_pix": 1.0,
+            "minor_extent_pix": 1.0,
             "aspect_ratio": 1.0,
             "orientation_deg": 0.0,
         }
@@ -891,22 +900,39 @@ def blob_pca_metrics(coords, weights=None):
     proj_major = Xc @ major_axis
     proj_minor = Xc @ minor_axis
 
-    major_extent = float(proj_major.max() - proj_major.min())
-    minor_extent = float(proj_minor.max() - proj_minor.min())
+    # center-to-center span; +1 makes single-row/column blobs come out in pixel units
+    #major_extent = float(proj_major.max() - proj_major.min() + 1.0)
+    #minor_extent = float(proj_minor.max() - proj_minor.min() + 1.0)
+    #major_sigma_pix = float(np.sqrt(max(evals[0], 0.0)))
+    #minor_sigma_pix = float(np.sqrt(max(evals[1], 0.0)))
+    #aspect_ratio = major_extent / minor_extent if minor_extent > 0 else 1.0
 
-    aspect_ratio = (
-        major_extent / minor_extent
-        if minor_extent > 0 else np.inf
-    )
+    # Geometric span in projected coordinates
+    major_extent_geom = float(proj_major.max() - proj_major.min() + 1.0)
+    minor_extent_geom = float(proj_minor.max() - proj_minor.min() + 1.0)
 
-    # angle of major axis relative to +x direction
-    # coords are (y,x), so convert carefully
+    # Convert projected geometric span to pixel-count-like span
+    major_step_scale = max(abs(major_axis[0]), abs(major_axis[1]))
+    minor_step_scale = max(abs(minor_axis[0]), abs(minor_axis[1]))
+
+    major_extent_pix = 1.0 + (major_extent_geom - 1.0) * major_step_scale
+    minor_extent_pix = 1.0 + (minor_extent_geom - 1.0) * minor_step_scale
+
+    if major_extent_pix < minor_extent_pix:
+        major_extent_pix, minor_extent_pix = minor_extent_pix, major_extent_pix
+        major_extent_geom, minor_extent_geom = minor_extent_geom, major_extent_geom
+        major_axis, minor_axis = minor_axis, major_axis
+
+    aspect_ratio = major_extent_pix / minor_extent_pix if minor_extent_pix > 0 else np.inf
+
     dy, dx = major_axis[0], major_axis[1]
     orientation_deg = float(np.degrees(np.arctan2(dy, dx)))
 
     return {
-        "major_extent_pix": major_extent,
-        "minor_extent_pix": minor_extent,
+        "major_extent_geom": major_extent_geom,
+        "minor_extent_geom": minor_extent_geom,
+        "major_extent_pix": major_extent_pix,
+        "minor_extent_pix": minor_extent_pix,
         "aspect_ratio": aspect_ratio,
         "orientation_deg": orientation_deg,
     }
@@ -1110,10 +1136,12 @@ def cr_analysis(fits_path, gain_path, params):
 
     blob_sums = {}
     blob_counts = {}
-    blob_major_extents = {}
-    blob_minor_extents = {}
+    blob_major_extent_pix = {}
+    blob_minor_extent_pix = {}
     blob_aspect_ratios = {}
     blob_orientations = {}
+    blob_major_extent_geom = {}
+    blob_minor_extent_geom = {}
     blob_ginis = {}
     hit_blob_label = np.zeros(len(merged_events), dtype=int)
 
@@ -1162,8 +1190,10 @@ def cr_analysis(fits_path, gain_path, params):
 
         blob_sums[f] = result["sums"]
         blob_counts[f] = result["counts"]
-        blob_major_extents[f] = result["major_extents"]
-        blob_minor_extents[f] = result["minor_extents"]
+        blob_major_extent_geom[f] = result["major_extent_geom"]
+        blob_minor_extent_geom[f] = result["minor_extent_geom"]
+        blob_major_extent_pix[f] = result["major_extent_pix"]
+        blob_minor_extent_pix[f] = result["minor_extent_pix"]
         blob_aspect_ratios[f] = result["aspect_ratios"]
         blob_orientations[f] = result["orientations"]
         blob_ginis[f] = result["ginis"]
@@ -1180,8 +1210,10 @@ def cr_analysis(fits_path, gain_path, params):
         supercell_size=supercell_size,
         blob_sums=blob_sums,
         blob_counts=blob_counts,
-        blob_major_extents=blob_major_extents,
-        blob_minor_extents=blob_minor_extents,
+        blob_major_extent_geom=blob_major_extent_geom,
+        blob_minor_extent_geom=blob_minor_extent_geom,
+        blob_major_extent_pix=blob_major_extent_pix,
+        blob_minor_extent_pix=blob_minor_extent_pix,
         blob_aspect_ratios=blob_aspect_ratios,
         blob_orientations=blob_orientations,
         blob_ginis=blob_ginis,
