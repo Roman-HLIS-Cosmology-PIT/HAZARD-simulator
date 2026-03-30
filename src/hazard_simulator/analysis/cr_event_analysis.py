@@ -866,6 +866,8 @@ def blob_pca_metrics(coords, weights=None):
 
     if coords.shape[0] == 0:
         return {
+            "major_extent_geom": 0.0,
+            "minor_extent_geom": 0.0,
             "major_extent_pix": 0.0,
             "minor_extent_pix": 0.0,
             "aspect_ratio": 1.0,
@@ -874,6 +876,8 @@ def blob_pca_metrics(coords, weights=None):
 
     if coords.shape[0] == 1:
         return {
+            "major_extent_geom": 1.0,
+            "minor_extent_geom": 1.0,
             "major_extent_pix": 1.0,
             "minor_extent_pix": 1.0,
             "aspect_ratio": 1.0,
