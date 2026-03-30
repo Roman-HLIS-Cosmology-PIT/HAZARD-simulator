@@ -8,20 +8,24 @@ import numpy as np
 from cr_event_analysis import blob_pca_metrics
 
 
-def test_blob_pca_single_pixel():
-    coords = np.array([[5, 5]])
+def test_blob_pca_empty_input():
+    coords = np.empty((0, 2), dtype=int)
     m = blob_pca_metrics(coords)
+    assert m["major_extent_geom"] == 0.0
+    assert m["minor_extent_geom"] == 0.0
     assert m["major_extent_pix"] == 0.0
     assert m["minor_extent_pix"] == 0.0
     assert m["aspect_ratio"] == 1.0
     assert m["orientation_deg"] == 0.0
 
 
-def test_blob_pca_empty_input():
-    coords = np.empty((0, 2), dtype=int)
+def test_blob_pca_single_pixel():
+    coords = np.array([[5, 5]])
     m = blob_pca_metrics(coords)
-    assert m["major_extent_pix"] == 0.0
-    assert m["minor_extent_pix"] == 0.0
+    assert m["major_extent_geom"] == 1.0
+    assert m["minor_extent_geom"] == 1.0
+    assert m["major_extent_pix"] == 1.0
+    assert m["minor_extent_pix"] == 1.0
     assert m["aspect_ratio"] == 1.0
     assert m["orientation_deg"] == 0.0
 
@@ -29,18 +33,20 @@ def test_blob_pca_empty_input():
 def test_blob_pca_horizontal_line():
     coords = np.array([[10, 3], [10, 4], [10, 5], [10, 6], [10, 7]])
     m = blob_pca_metrics(coords)
-    assert m["major_extent_pix"] > 3.9
-    assert m["minor_extent_pix"] < 1e-10
-    assert np.isinf(m["aspect_ratio"])
+
+    assert np.isclose(m["major_extent_pix"], 5.0, atol=1e-6)
+    assert np.isclose(m["minor_extent_pix"], 1.0, atol=1e-6)
+    assert np.isclose(m["aspect_ratio"], 5.0, atol=1e-6)
     assert abs(m["orientation_deg"]) < 1e-6
 
 
 def test_blob_pca_vertical_line():
     coords = np.array([[3, 10], [4, 10], [5, 10], [6, 10], [7, 10]])
     m = blob_pca_metrics(coords)
-    assert m["major_extent_pix"] > 3.9
-    assert m["minor_extent_pix"] < 1e-10
-    assert np.isinf(m["aspect_ratio"])
+
+    assert np.isclose(m["major_extent_pix"], 5.0, atol=1e-6)
+    assert np.isclose(m["minor_extent_pix"], 1.0, atol=1e-6)
+    assert np.isclose(m["aspect_ratio"], 5.0, atol=1e-6)
     assert abs(abs(m["orientation_deg"]) - 90.0) < 1e-6
 
 
@@ -51,5 +57,31 @@ def test_blob_pca_square_blob():
         [2, 0], [2, 1], [2, 2],
     ])
     m = blob_pca_metrics(coords)
-    assert m["major_extent_pix"] >= m["minor_extent_pix"]
-    assert abs(m["aspect_ratio"] - 1.0) < 0.25
+
+    assert np.isclose(m["major_extent_pix"], 3.0, atol=1e-6)
+    assert np.isclose(m["minor_extent_pix"], 3.0, atol=1e-6)
+    assert np.isclose(m["aspect_ratio"], 1.0, atol=1e-6)
+
+
+def test_blob_pca_rectangle_blob():
+    coords = np.array([
+        [0, 0], [0, 1], [0, 2], [0, 3], [0, 4],
+        [1, 0], [1, 1], [1, 2], [1, 3], [1, 4],
+        [2, 0], [2, 1], [2, 2], [2, 3], [2, 4],
+    ])
+    m = blob_pca_metrics(coords)
+
+    assert np.isclose(m["major_extent_pix"], 5.0, atol=1e-6)
+    assert np.isclose(m["minor_extent_pix"], 3.0, atol=1e-6)
+    assert np.isclose(m["aspect_ratio"], 5.0 / 3.0, atol=1e-6)
+    assert abs(m["orientation_deg"]) < 1e-6
+
+
+def test_blob_pca_diagonal_line():
+    coords = np.array([[5, 5], [6, 6], [7, 7], [8, 8], [9, 9]])
+    m = blob_pca_metrics(coords)
+
+    assert np.isclose(m["major_extent_pix"], 5.0, atol=1e-6)
+    assert np.isclose(m["minor_extent_pix"], 1.0, atol=1e-6)
+    assert np.isclose(m["aspect_ratio"], 5.0, atol=1e-6)
+    assert abs(abs(m["orientation_deg"]) - 45.0) < 1e-6
