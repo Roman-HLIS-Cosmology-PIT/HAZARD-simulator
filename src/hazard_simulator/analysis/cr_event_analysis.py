@@ -339,8 +339,10 @@ def analyze_blobs_by_frame(
     # Blob-level arrays
     sums = np.zeros(n_blobs, dtype=np.float32)
     counts = np.zeros(n_blobs, dtype=int)
-    major_extents = np.zeros(n_blobs, dtype=np.float32)
-    minor_extents = np.zeros(n_blobs, dtype=np.float32)
+    major_extent_geom = np.zeros(n_blobs, dtype=np.float32)
+    minor_extent_geom = np.zeros(n_blobs, dtype=np.float32)
+    major_extent_pix = np.zeros(n_blobs, dtype=np.float32)
+    minor_extent_pix = np.zeros(n_blobs, dtype=np.float32)
     aspect_ratios = np.zeros(n_blobs, dtype=np.float32)
     orientations = np.zeros(n_blobs, dtype=np.float32)
     ginis = np.zeros(n_blobs, dtype=np.float32)
@@ -373,14 +375,18 @@ def analyze_blobs_by_frame(
 
         if n_blob_pix > 10000:
             print(f"Warning: frame {f}, blob {blob_label} has {n_blob_pix} pixels")
-            major_extents[blob_label - 1] = np.nan
-            minor_extents[blob_label - 1] = np.nan
+            major_extent_geom[blob_label - 1] = np.nan
+            minor_extent_geom[blob_label - 1] = np.nan
+            major_extent_pix[blob_label - 1] = np.nan
+            minor_extent_pix[blob_label - 1] = np.nan
             aspect_ratios[blob_label - 1] = np.nan
             orientations[blob_label - 1] = np.nan
         else:
             metrics = blob_pca_metrics(blob_coords, weights=blob_vals_pos)
-            major_extents[blob_label - 1] = metrics["major_extent_pix"]
-            minor_extents[blob_label - 1] = metrics["minor_extent_pix"]
+            major_extent_geom[blob_label - 1] = metrics["major_extent_geom"]
+            minor_extent_geom[blob_label - 1] = metrics["minor_extent_geom"]
+            major_extent_pix[blob_label - 1] = metrics["major_extent_pix"]
+            minor_extent_pix[blob_label - 1] = metrics["minor_extent_pix"]
             aspect_ratios[blob_label - 1] = metrics["aspect_ratio"]
             orientations[blob_label - 1] = metrics["orientation_deg"]
 
@@ -419,8 +425,10 @@ def analyze_blobs_by_frame(
         "idxs": idxs,
         "sums": sums,
         "counts": counts,
-        "major_extents": major_extents,
-        "minor_extents": minor_extents,
+        "major_extent_geom": major_extent_geom,
+        "minor_extent_geom": minor_extent_geom,
+        "major_extent_pix": major_extent_pix,
+        "minor_extent_pix": minor_extent_pix,
         "aspect_ratios": aspect_ratios,
         "orientations": orientations,
         "ginis": ginis,
@@ -435,8 +443,10 @@ def process_hit(
     supercell_size,
     blob_sums,
     blob_counts,
-    blob_major_extents,
-    blob_minor_extents,
+    blob_major_extent_geom,
+    blob_minor_extent_geom,
+    blob_major_extent_pix,
+    blob_minor_extent_pix,
     blob_aspect_ratios,
     blob_orientations,
     blob_ginis,
@@ -456,8 +466,8 @@ def process_hit(
     sum_blob = int(blob_sums[frame][blob_label - 1])
     n_pix_blob = int(blob_counts[frame][blob_label - 1])
 
-    major_blob = float(blob_major_extents[frame][blob_label - 1])
-    minor_blob = float(blob_minor_extents[frame][blob_label - 1])
+    major_blob = float(blob_major_extent_pix[frame][blob_label - 1])
+    minor_blob = float(blob_minor_extent_pix[frame][blob_label - 1])
     aspect_blob = float(blob_aspect_ratios[frame][blob_label - 1])
     orient_blob = float(blob_orientations[frame][blob_label - 1])
 
