@@ -316,47 +316,90 @@ def preclassify_events(
         y0, y1, x0, x1 = extract_box_bounds(y, x, im_corr.shape, half_size=2)
         roi = im_corr[y0:y1, x0:x1]
 
+        # 5x5 local ROI already exists here
+        roi_pos = np.clip(roi, 0.0, None)
+        sum_pos = float(roi_pos.sum())
+
+        # fraction of positive signal in the center peak
+        peak_fraction = p / sum_pos if sum_pos > 0 else 1.0
+
+        # count of support pixels above a modest threshold
+        support_floor = max(0.20 * p, 3.0)
+        support_mask = roi > support_floor
+        n_support = int(np.count_nonzero(support_mask))
+
+        # connected support size containing the center pixel
+        cy = y - y0
+        cx = x - x0
+        lab, _ = label(support_mask, structure=np.ones((3, 3), dtype=bool))
+        if support_mask[cy, cx]:
+            center_label = lab[cy, cx]
+            center_cc_size = int(np.count_nonzero(lab == center_label))
+        else:
+            center_cc_size = 0
+
+
         # threshold to select signal pixels
         mask = roi > (0.35 * p)
 
         coords = np.argwhere(mask)
 
-        if len(coords) >= 3:
-            coords = coords.astype(float)
+        bbox_h = 0
+        bbox_w = 0
 
-            center = coords.mean(axis=0)
-            X = coords - center
+        if len(coords) >= 5:
+            bbox_h = int(coords[:, 0].max() - coords[:, 0].min() + 1)
+            bbox_w = int(coords[:, 1].max() - coords[:, 1].min() + 1)
 
-            cov = (X.T @ X) / len(X)
-            evals, _ = np.linalg.eigh(cov)
+            if bbox_h >= 2 and bbox_w >= 2:
+                coords = coords.astype(float)
+                center = coords.mean(axis=0)
+                X = coords - center
+                cov = (X.T @ X) / len(X)
+                evals, _ = np.linalg.eigh(cov)
+                evals = np.sort(evals)[::-1]
 
-            evals = np.sort(evals)[::-1]
+                lam1 = float(evals[0])
+                lam2 = float(evals[1])
+                denom = lam1 + lam2
 
-            if evals[1] > 0:
-                linearity = float(evals[0] / evals[1])
+                if denom > 1e-6:
+                    linearity = float(evals[0] / evals[1])
+                    anisotropy = (lam1 - lam2) / denom
+                else:
+                    linearity = 1.0
+                    anisotropy = 0.0
             else:
-                linearity = 150 # ask if this is a good default for what should be inf?
+                linearity = 1.0
+                anisotropy = 0.0
         else:
             linearity = 1.0
+            anisotropy = 0.0
 
+        is_noise_like = (
+            (n_support <= 2)
+            or (center_cc_size <= 2)
+            or (peak_fraction >= 0.85 and r5 < 1.5)
+        )
 
         is_isolated = (
             (r3 < support3_thresh)
             and (r5 < support5_thresh)
             and (nsec <= max_secondary_peaks_for_isolated)
             and (linearity < 2.5)   # reject linear structures
+            and (anisotropy < 0.55)
         )
-
-        streak_linearity_min = 5.0
-        streak_nsec_min = 2
 
         is_streak_like = (
-            (linearity >= streak_linearity_min)
-            and (r5 >= support5_thresh)
-            and (nsec >= streak_nsec_min)
+            (anisotropy >= 0.80)
+            and (linearity >= 5.0)
+            and (r5 >= 1.5)
+            and (nsec >= 2)
         )
 
-        if is_isolated:
+        if is_noise_like:
+            cls = "noise"
+        elif is_isolated:
             cls = "likely_xray"
         elif is_streak_like:
             cls = "likely_streak"
@@ -375,6 +418,9 @@ def preclassify_events(
             "r5": float(r5),
             "n_secondary_5x5": int(nsec),
             "linearity": float(linearity),
+            "anisotropy": float(anisotropy),
+            "bbox_h_5x5": int(bbox_h),
+            "bbox_w_5x5": int(bbox_w),
         })
 
     return rows
@@ -2142,6 +2188,10 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
                 "r3": np.nan,
                 "r5": np.nan,
                 "n_secondary_5x5": np.nan,
+                "linearity": np.nan,
+                "anisotropy": np.nan,
+                "bbox_h_5x5": np.nan,
+                "bbox_w_5x5": np.nan,
             })
 
     pre_df = pd.DataFrame(pre_rows)
