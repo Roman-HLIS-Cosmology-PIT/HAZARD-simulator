@@ -154,15 +154,30 @@ def filter_transient_events(events, transient_verification="full_exposure"):
         )
 
 
-def find_peaks_for_frame(data_cube, index, badpix_mask, sigma_thresh):
+def find_peaks_for_frame(data_cube, index, badpix_mask, sigma_thresh,
+    exclude_badpix_neighbors=False):
     image   = data_cube[index]
     _, med, _ = sigma_clipped_stats(image, sigma=3.0, maxiters=5)
     mad     = np.median(np.abs(image - med))
     sigma_e = mad * 1.4826
     threshold = med + sigma_thresh * sigma_e
 
-    local_max = maximum_filter(image, size=3)
-    cand      = (image == local_max) & (~badpix_mask) & (image > threshold)
+    if exclude_badpix_neighbors:
+        reject_mask = binary_dilation(badpix_mask, structure=np.ones((3,3)))
+    else:
+        reject_mask = badpix_mask
+
+    image_for_max = image.astype(np.float32, copy=True)
+    image_for_max[reject_mask] = -np.inf
+
+    local_max = maximum_filter(image_for_max, size=3, mode="nearest")
+
+    cand = (
+        (image_for_max == local_max)
+        & (~reject_mask)
+        & np.isfinite(image_for_max)
+        & (image > threshold)
+    )
 
     ys, xs = np.where(cand)
     peaks  = [(index, int(y), int(x)) for y, x in zip(ys, xs)]
@@ -234,7 +249,7 @@ def preclassify_events(
     data_cube,
     medians,
     support3_thresh=0.18,
-    support5_thresh=0.35,
+    support5_thresh=2.0,
     secondary_peak_rel_thresh=0.35,
     secondary_peak_abs_thresh=None,
     max_secondary_peaks_for_isolated=0,
@@ -332,9 +347,13 @@ def preclassify_events(
             and (linearity < 2.5)   # reject linear structures
         )
 
+        streak_linearity_min = 5.0
+        streak_nsec_min = 2
+
         is_streak_like = (
-            (linearity >= 2.5)
+            (linearity >= streak_linearity_min)
             and (r5 >= support5_thresh)
+            and (nsec >= streak_nsec_min)
         )
 
         if is_isolated:
