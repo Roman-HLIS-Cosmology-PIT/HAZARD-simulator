@@ -1,7 +1,9 @@
 # script for analyzing real and simulated cosmic ray events
 # Initial creation date: 23-Mar-2026
 # Developers: Anthony Harbo Torres
-# version 0.13
+# Notes: Gaussian smoothing and edge detection idea
+#           provided by Emily Koivu
+# version 0.14
 
 import os
 import time
@@ -12,15 +14,16 @@ import pandas as pd
 from tqdm import tqdm
 from scipy.ndimage import (
     binary_dilation,
+    binary_erosion,
+    binary_fill_holes,
     maximum_filter,
+    gaussian_filter,
     label,
     find_objects
 )
 from tqdm.contrib.concurrent import thread_map
 from concurrent.futures import ThreadPoolExecutor
-from scipy.spatial import Delaunay, ConvexHull
 from astropy.stats import sigma_clipped_stats
-from matplotlib.path import Path
 from collections import Counter
 from functools import partial
 from astropy.io import fits
@@ -451,91 +454,6 @@ def preclassify_events(
 
     return rows
 
-def build_group_axis_models(
-    cc_img,
-    seed_groups,
-    seed_pixels,
-    max_endcap_extra=4.0,
-):
-    """
-    Build a lightweight geometric model for each seed group.
-
-    Returns
-    -------
-    group_models : list[dict]
-        One dict per group with:
-          label
-          seed_ids
-          center
-          major_axis
-          minor_axis
-          proj_min
-          proj_max
-    """
-    group_models = []
-
-    for label_id, group in enumerate(seed_groups, start=1):
-        # Gather all seed points in this group
-        grp_seed_pts = np.array(
-            [seed_pixels[sid] for sid in group if sid in seed_pixels],
-            dtype=float,
-        )
-
-        if len(grp_seed_pts) == 0:
-            continue
-
-        # Try to get a richer point cloud from the connected core component(s)
-        cc_ids = []
-        for p in grp_seed_pts.astype(int):
-            y, x = p
-            cc_id = cc_img[y, x]
-            if cc_id > 0:
-                cc_ids.append(cc_id)
-
-        cc_ids = np.unique(cc_ids)
-
-        if len(cc_ids) > 0:
-            grp_core_pts = np.argwhere(np.isin(cc_img, cc_ids))
-            pts = grp_core_pts.astype(float)
-        else:
-            pts = grp_seed_pts
-
-        # Degenerate case: one point only
-        if len(pts) == 1:
-            center = pts[0]
-            major_axis = np.array([0.0, 1.0], dtype=float)  # default x-like direction in (y,x) basis
-            minor_axis = np.array([1.0, 0.0], dtype=float)
-            proj = np.array([0.0])
-        else:
-            center = pts.mean(axis=0)
-            X = pts - center
-            cov = (X.T @ X) / max(len(X), 1)
-
-            evals, evecs = np.linalg.eigh(cov)
-            order = np.argsort(evals)[::-1]
-            evecs = evecs[:, order]
-
-            major_axis = evecs[:, 0]
-            minor_axis = evecs[:, 1]
-
-            proj = X @ major_axis
-
-        proj_min = float(np.min(proj) - max_endcap_extra)
-        proj_max = float(np.max(proj) + max_endcap_extra)
-
-        group_models.append({
-            "label": label_id,
-            "seed_ids": group,
-            "center": center,
-            "major_axis": major_axis,
-            "minor_axis": minor_axis,
-            "proj_min": proj_min,
-            "proj_max": proj_max,
-            "seed_pts": grp_seed_pts,
-        })
-
-    return group_models
-
 def assign_peaks_to_labels(coords, lab_img, search_radius=2):
     """
     Assign each peak coordinate to a nearby nonzero label in lab_img.
@@ -609,138 +527,200 @@ def build_event_neighborhood_mask(coords, h, w, radius=12):
 
     return mask
 
-def recover_labeled_blob_footprints(
-    lab_img,
-    im_corr,
-    recover_thresh=3.0,
-    structure=None,
-    pad=2,
-    max_recover_pixels=20000,
-    max_perp_dist=2.5,
-    endcap_extra=4.0,
-):
+
+def edge_pixels_from_mask(mask, structure=None):
     """
-    Directional recovery for elongated blobs.
-    Grow each label only into connected pixels that are both above threshold
-
-    and geometrically consistent with the blob's current major-axis model.
-    Parameters
-    ----------
-    lab_img : 2D int ndarray
-        Initial label image. 0 = background, 1..N = blob labels.
-    im_corr : 2D ndarray
-        Background-subtracted image in the same ROI as lab_img.
-    recover_thresh : float
-        Lower threshold for the footprint-recovery step.
-    structure : 2D boolean ndarray or None
-        Connectivity structure for binary_dilation. Defaults to 3x3.
-    pad : int
-        Padding added around each blob slice before recovery.
-    max_recover_pixels : int
-        Bail out if a blob local region gets too large.
-
-    Returns
-    -------
-    lab_out : 2D int ndarray
-        Label image after per-blob footprint recovery.
+    Return a 1-pixel-wide edge mask for a filled boolean region.
     """
     if structure is None:
         structure = np.ones((3, 3), dtype=bool)
 
-    lab_out = np.array(lab_img, copy=True)
-    n_labels = int(lab_img.max())
+    if not np.any(mask):
+        return np.zeros_like(mask, dtype=bool)
 
-    if n_labels <= 0:
-        return lab_out
+    eroded = binary_erosion(mask, structure=structure, border_value=0)
+    edge = mask & (~eroded)
+    return edge
 
-    blob_slices = find_objects(lab_img)
 
-    for blob_label, slc in enumerate(blob_slices, start=1):
-        if slc is None:
+def build_smoothed_seeded_blob_labels(
+    im_corr,
+    coords,
+    neighborhood_mask=None,
+    structure=None,
+    gaussian_sigma=0.8,
+    edge_thresh=3.0,
+    seed_thresh=20.0,
+    min_blob_pixels=1,
+    fill_holes=True,
+    return_debug=False,
+):
+    """
+    Build event labels from a smoothed ROI, but keep the final measurements tied
+    to the original unsmoothed background-subtracted ROI.
+
+    Strategy
+    --------
+    1. Smooth the local ROI to suppress pixel-scale jaggedness/noise.
+    2. Threshold the smoothed image at a lower 'edge/support' threshold.
+    3. Keep only connected support components that contain at least one event seed.
+    4. Optionally fill holes to get a solid footprint.
+    5. Return a labeled image for downstream metrics on the ORIGINAL im_corr.
+
+    Parameters
+    ----------
+    im_corr : 2D ndarray
+        Background-subtracted ROI image.
+    coords : (N, 2) ndarray
+        Peak/event coordinates in ROI-local (y, x) coordinates.
+    neighborhood_mask : 2D bool ndarray or None
+        Optional mask restricting where footprint finding is allowed.
+    structure : 2D bool ndarray or None
+        Connectivity structure. Defaults to 3x3 full connectivity.
+    gaussian_sigma : float
+        Gaussian sigma in pixels for ROI smoothing.
+    edge_thresh : float
+        Lower threshold on the smoothed ROI used to define support/footprint.
+    seed_thresh : float
+        Higher threshold on the smoothed ROI used only for sanity checks.
+        A component will be kept if it contains a seed; this threshold is
+        mainly diagnostic / optional protection against weak fuzzy junk.
+    min_blob_pixels : int
+        Minimum pixel count for a kept blob.
+    fill_holes : bool
+        If True, fill internal holes in each kept component.
+    return_debug : bool
+        If True, also return intermediate masks useful for plotting.
+
+    Returns
+    -------
+    label_img : 2D int ndarray
+        Final label image, 0 background, 1..N blobs.
+    debug : dict, optional
+        Returned only when return_debug=True.
+    """
+    if structure is None:
+        structure = np.ones((3, 3), dtype=bool)
+
+    h, w = im_corr.shape
+    label_img = np.zeros((h, w), dtype=np.int32)
+
+    if len(coords) == 0:
+        if return_debug:
+            return label_img, {
+                "smoothed": np.zeros_like(im_corr, dtype=np.float32),
+                "support_mask": np.zeros_like(label_img, dtype=bool),
+                "edge_mask": np.zeros_like(label_img, dtype=bool),
+                "seed_mask": np.zeros_like(label_img, dtype=bool),
+            }
+        return label_img
+
+    # Restrict the smoothing/thresholding domain if requested.
+    work = im_corr.astype(np.float32, copy=True)
+
+    if neighborhood_mask is not None:
+        work[~neighborhood_mask] = 0.0
+
+    smoothed = gaussian_filter(work, sigma=gaussian_sigma, mode="nearest")
+
+    # Thresholds on smoothed ROI
+    support_mask = smoothed > edge_thresh
+    seed_mask = smoothed > seed_thresh
+
+    if neighborhood_mask is not None:
+        support_mask &= neighborhood_mask
+        seed_mask &= neighborhood_mask
+
+    if not np.any(support_mask):
+        if return_debug:
+            return label_img, {
+                "smoothed": smoothed,
+                "support_mask": support_mask,
+                "edge_mask": np.zeros_like(support_mask, dtype=bool),
+                "seed_mask": seed_mask,
+            }
+        return label_img
+
+    # Connected components on smoothed support
+    cc_img, n_cc = label(support_mask, structure=structure)
+
+    if n_cc == 0:
+        if return_debug:
+            return label_img, {
+                "smoothed": smoothed,
+                "support_mask": support_mask,
+                "edge_mask": np.zeros_like(support_mask, dtype=bool),
+                "seed_mask": seed_mask,
+            }
+        return label_img
+
+    # Assign each seed to a support component.
+    seed_cc_labels = assign_peaks_to_labels(coords, cc_img, search_radius=2)
+
+    kept_components = []
+    for cc_id in np.unique(seed_cc_labels):
+        if cc_id <= 0:
             continue
 
-        ysl, xsl = slc
-        y0 = max(0, ysl.start - pad)
-        y1 = min(lab_img.shape[0], ysl.stop + pad)
-        x0 = max(0, xsl.start - pad)
-        x1 = min(lab_img.shape[1], xsl.stop + pad)
+        comp = (cc_img == cc_id)
 
-        lab_sub = lab_out[y0:y1, x0:x1]
-        im_sub = im_corr[y0:y1, x0:x1]
+        # Optional protection against weak fuzzy patches:
+        # keep if the component contains either a seed pixel assignment
+        # (already true by construction) and is big enough.
+        if fill_holes:
+            comp = binary_fill_holes(comp)
 
-        current = (lab_sub == blob_label)
-        if not np.any(current):
+        if int(np.count_nonzero(comp)) < min_blob_pixels:
             continue
 
-        if current.size > max_recover_pixels:
-            print(
-                f"Directional recovery skipped for blob {blob_label}: "
-                f"local region has {current.size} pixels"
-            )
-            continue
+        kept_components.append(comp)
 
-        coords = np.argwhere(current).astype(float)
-        vals = np.clip(im_sub[current], 0.0, None)
+    # Build final contiguous labels
+    next_label = 1
+    final_mask = np.zeros_like(support_mask, dtype=bool)
 
-        # fallback for tiny blobs
-        if len(coords) < 2 or np.sum(vals) <= 0:
-            center = coords.mean(axis=0)
-            major_axis = np.array([0.0, 1.0], dtype=float)
-            minor_axis = np.array([1.0, 0.0], dtype=float)
-            proj = np.zeros(len(coords), dtype=float)
-        else:
-            center = np.average(coords, axis=0, weights=vals)
-            X = coords - center
-            cov = (X * vals[:, None]).T @ X / np.sum(vals)
+    for comp in kept_components:
+        label_img[comp] = next_label
+        final_mask |= comp
+        next_label += 1
 
-            evals, evecs = np.linalg.eigh(cov)
-            order = np.argsort(evals)[::-1]
-            evecs = evecs[:, order]
+    # Optional fallback: if smoothing was too aggressive and no support CC was
+    # retained, create a tiny label around each seed above edge_thresh in the
+    # ORIGINAL ROI.
+    if next_label == 1:
+        for (y, x) in coords:
+            if not (0 <= y < h and 0 <= x < w):
+                continue
+            if im_corr[y, x] <= edge_thresh:
+                continue
 
-            major_axis = evecs[:, 0]
-            minor_axis = evecs[:, 1]
-            proj = X @ major_axis
+            y0 = max(0, y - 1)
+            y1 = min(h, y + 2)
+            x0 = max(0, x - 1)
+            x1 = min(w, x + 2)
 
-        proj_min = float(np.min(proj) - endcap_extra)
-        proj_max = float(np.max(proj) + endcap_extra)
+            tiny = np.zeros_like(final_mask, dtype=bool)
+            tiny[y0:y1, x0:x1] = True
 
-        other_labels = (lab_sub != 0) & (lab_sub != blob_label)
+            if neighborhood_mask is not None:
+                tiny &= neighborhood_mask
 
-        while True:
-            frontier = binary_dilation(current, structure=structure) & (~current)
-            candidates = frontier & (im_sub > recover_thresh) & (~other_labels)
+            label_img[tiny] = next_label
+            final_mask |= tiny
+            next_label += 1
 
-            if not np.any(candidates):
-                break
+    edge_mask = edge_pixels_from_mask(final_mask, structure=structure)
 
-            cand_pts = np.argwhere(candidates).astype(float)
-            keep = np.zeros(len(cand_pts), dtype=bool)
+    if return_debug:
+        return label_img, {
+            "smoothed": smoothed,
+            "support_mask": support_mask,
+            "kept_mask": final_mask,
+            "edge_mask": edge_mask,
+            "seed_mask": seed_mask,
+        }
 
-            for i, p in enumerate(cand_pts):
-                dp = p - center
-                longi = float(dp @ major_axis)
-                perp = float(abs(dp @ minor_axis))
-
-                if perp <= max_perp_dist and proj_min <= longi <= proj_max:
-                    keep[i] = True
-
-            if not np.any(keep):
-                break
-
-            kept_pts = cand_pts[keep].astype(int)
-            grew = False
-            for yy, xx in kept_pts:
-                if not current[yy, xx]:
-                    current[yy, xx] = True
-                    grew = True
-
-            if not grew:
-                break
-
-        lab_sub[lab_sub == blob_label] = 0
-        lab_sub[current] = blob_label
-
-    return lab_out
+    return label_img
 
 def analyze_blobs_by_frame(
     f,
@@ -750,23 +730,18 @@ def analyze_blobs_by_frame(
     medians,
     h,
     w,
-    small_struct,
-    blob_signal_thresh=5.0,   
+    small_struct,   
     peak_assign_radius=2,
     seed_thresh=20.0,
-    grow_thresh=None,
-    recover_thresh=3.0,
-    alpha=1.5,
-    min_points_for_hull=6,
-    max_assign_dist=12.0,
+    edge_thresh=3.0,
     event_neighborhood_radius=16,
-    seed_radius=1,
-    max_seed_link_dist=16.0,
-    bridge_min_frac=0.7,
-    elongated_merge_aspect=3.0,
+    gaussian_sigma=1.0,
+    min_blob_pixels=1,
+    fill_holes=True,
 ):
+
+    # Frame setup + preprocessing
     t_frame_start = time.perf_counter()
-    # Setup + preprocessing
     t0 = time.perf_counter()
     
     coords = events[idxs, 1:].astype(int)
@@ -805,32 +780,17 @@ def analyze_blobs_by_frame(
     # Build smart seeded labels
     t_label_start = time.perf_counter()
 
-
-    lab_img_roi = build_alpha_shape_labels(
+    lab_img_roi = build_smoothed_seeded_blob_labels(
         im_corr=im_roi,
         coords=coords_roi,
         neighborhood_mask=event_neighborhood_mask,
-        seed_thresh=seed_thresh,
-        grow_thresh=grow_thresh,
-        recover_thresh=recover_thresh,
-        small_struct=small_struct,
-        seed_radius=seed_radius,
-        max_seed_link_dist=max_seed_link_dist,
-        bridge_min_frac=bridge_min_frac,
-        elongated_merge_aspect=elongated_merge_aspect,
-        alpha=alpha,
-        min_points_for_hull=min_points_for_hull,
-        max_assign_dist=max_assign_dist,
-    )
-
-    lab_img_roi = recover_labeled_blob_footprints(
-        lab_img=lab_img_roi,
-        im_corr=im_roi,
-        recover_thresh=recover_thresh,
         structure=small_struct,
-        pad=2,
+        gaussian_sigma=gaussian_sigma,
+        edge_thresh=edge_thresh,
+        seed_thresh=seed_thresh,
+        min_blob_pixels=min_blob_pixels,
+        fill_holes=fill_holes,
     )
-
 
     t_label_end = time.perf_counter()
 
@@ -939,21 +899,6 @@ def analyze_blobs_by_frame(
     }
 
 
-def build_candidate_support_mask(
-    im_corr,
-    neighborhood_mask=None,
-    grow_thresh=6.5,
-    recover_thresh=3.0,
-):
-    support = im_corr > recover_thresh
-    core = im_corr > grow_thresh
-
-    if neighborhood_mask is not None:
-        support &= neighborhood_mask
-        core &= neighborhood_mask
-
-    return core, support
-
 def process_hit(
     hit,
     data_cube,
@@ -1019,498 +964,6 @@ def process_hit(
         "supercell_gain": sc_gain,
     }
 
-def _line_bridge_score(p0, p1, mask):
-    """
-    Fraction of sampled points along the line from p0 to p1 that fall on True pixels in mask.
-
-    Parameters
-    ----------
-    p0, p1 : iterable of length 2
-        (y, x) endpoints
-    mask : 2D boolean ndarray
-
-    Returns
-    -------
-    score : float in [0, 1]
-    """
-    y0, x0 = p0
-    y1, x1 = p1
-
-    dy = y1 - y0
-    dx = x1 - x0
-    n = int(max(abs(dy), abs(dx))) + 1
-    if n <= 1:
-        return 1.0
-
-    ys = np.rint(np.linspace(y0, y1, n)).astype(int)
-    xs = np.rint(np.linspace(x0, x1, n)).astype(int)
-
-    h, w = mask.shape
-    ys = np.clip(ys, 0, h - 1)
-    xs = np.clip(xs, 0, w - 1)
-
-    return float(np.mean(mask[ys, xs]))
-
-
-def _component_seed_groups(
-    cc_mask,
-    coords_in_cc,
-    local_seed_ids,
-    grow_mask,
-    max_seed_link_dist=9.0,
-    bridge_min_frac=0.7,
-    elongated_merge_aspect=3.0,
-):
-    """
-    Decide how seeds inside one low-threshold connected component should be grouped.
-
-    Strategy
-    --------
-    1. If only one seed is present -> one group.
-    2. If the component is elongated, allow more aggressive seed merging.
-    3. Merge two seeds if:
-       - they are not too far apart, and
-       - the line between them is mostly supported by grow_mask
-         OR the component is strongly elongated.
-
-    Returns
-    -------
-    groups : list[list[int]]
-        Each inner list contains seed ids that should become one event group.
-    """
-    if len(local_seed_ids) <= 1:
-        return [list(local_seed_ids)]
-
-    cc_coords = np.argwhere(cc_mask)
-    cc_metrics = blob_pca_metrics(cc_coords)
-    cc_aspect = cc_metrics["aspect_ratio"]
-
-    seed_pts = np.array([coords_in_cc[sid] for sid in local_seed_ids], dtype=float)
-    n = len(local_seed_ids)
-
-    # simple union-find
-    parent = list(range(n))
-
-    def find(i):
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
-
-    def union(i, j):
-        ri, rj = find(i), find(j)
-        if ri != rj:
-            parent[rj] = ri
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            p0 = seed_pts[i]
-            p1 = seed_pts[j]
-            dist = float(np.hypot(*(p1 - p0)))
-
-            if dist > max_seed_link_dist:
-                continue
-
-            bridge_score = _line_bridge_score(p0, p1, grow_mask)
-
-            # Merge if strongly bridged, or if the whole component is very elongated
-            # and the seeds are not too far apart.
-            if (bridge_score >= bridge_min_frac) or (
-                cc_aspect >= elongated_merge_aspect and dist <= 0.75 * max_seed_link_dist
-            ):
-                union(i, j)
-
-    groups_dict = {}
-    for i, sid in enumerate(local_seed_ids):
-        root = find(i)
-        groups_dict.setdefault(root, []).append(sid)
-
-    return list(groups_dict.values())
-
-def find_seed_pixels(
-    im_corr,
-    coords,
-    seed_thresh=25.0,
-    seed_radius=1,
-    fallback_mask=None,
-):
-    """
-    Find one seed pixel near each merged-event coordinate.
-
-    Parameters
-    ----------
-    im_corr : 2D ndarray
-        Background-subtracted ROI image.
-    coords : (N, 2) ndarray
-        Event coordinates as (y, x).
-    seed_thresh : float
-        Threshold for selecting a strong local seed.
-    seed_radius : int
-        Search radius around each event coordinate.
-    fallback_mask : 2D boolean ndarray or None
-        If no strong seed is found, allow fallback to the original coord
-        if that coord lies inside fallback_mask.
-
-    Returns
-    -------
-    seed_pixels : dict[int, ndarray]
-        seed_pixels[seed_id] = np.array([y, x], dtype=int)
-    """
-    h, w = im_corr.shape
-    coords = np.asarray(coords, dtype=int)
-
-    seed_pixels = {}
-
-    for seed_id, (y, x) in enumerate(coords):
-        y0 = max(0, y - seed_radius)
-        y1 = min(h, y + seed_radius + 1)
-        x0 = max(0, x - seed_radius)
-        x1 = min(w, x + seed_radius + 1)
-
-        patch = im_corr[y0:y1, x0:x1]
-        seed_patch = patch > seed_thresh
-
-        if np.any(seed_patch):
-            locs = np.argwhere(seed_patch)
-            vals = patch[seed_patch]
-            k = int(np.argmax(vals))
-            yy, xx = locs[k]
-            seed_pixels[seed_id] = np.array([y0 + yy, x0 + xx], dtype=int)
-        else:
-            if (
-                fallback_mask is not None
-                and 0 <= y < h
-                and 0 <= x < w
-                and fallback_mask[y, x]
-            ):
-                seed_pixels[seed_id] = np.array([y, x], dtype=int)
-
-    return seed_pixels
-
-def assign_support_pixels_to_seed_groups(
-    support_mask,
-    group_models,
-    max_assign_dist=12.0,
-    max_perp_dist=2.5,
-    longitudinal_weight=0.15,
-    perp_weight=1.0,
-):
-    """
-    Assign support pixels to the nearest plausible seed-group, with a
-    directional penalty based on perpendicular distance to the group's
-    major axis.
-
-    Parameters
-    ----------
-    support_mask : 2D boolean ndarray
-        Candidate support pixels.
-    group_models : list[dict]
-        Output of build_group_axis_models(...).
-    max_assign_dist : float
-        Max nearest-seed distance allowed.
-    max_perp_dist : float
-        Max perpendicular distance from the group's major axis.
-    longitudinal_weight : float
-        Small penalty on longitudinal offset from the group center.
-    perp_weight : float
-        Stronger penalty on perpendicular distance.
-    """
-    support_pts = np.argwhere(support_mask).astype(float)
-
-    points_by_label = {}
-    if support_pts.size == 0 or len(group_models) == 0:
-        return points_by_label
-
-    max_d2 = float(max_assign_dist ** 2)
-
-    assigned_lists = {gm["label"]: [] for gm in group_models}
-
-    for p in support_pts:
-        best_label = None
-        best_score = np.inf
-
-        for gm in group_models:
-            seed_pts = gm["seed_pts"]
-            center = gm["center"]
-            major_axis = gm["major_axis"]
-            minor_axis = gm["minor_axis"]
-
-            # 1) keep old nearest-seed distance gate
-            d2_seed = np.min(np.sum((seed_pts - p) ** 2, axis=1))
-            if d2_seed > max_d2:
-                continue
-
-            # 2) directional coordinates relative to group center
-            dp = p - center
-            longi = float(dp @ major_axis)
-            perp = float(abs(dp @ minor_axis))
-
-            # 3) reject points too far off-axis
-            if perp > max_perp_dist:
-                continue
-
-            # 4) reject points far beyond current ends
-            if longi < gm["proj_min"] or longi > gm["proj_max"]:
-                continue
-
-            # 5) score: nearest seed + strong perp penalty
-            score = (
-                d2_seed
-                + longitudinal_weight * (longi ** 2)
-                + perp_weight * (perp ** 2)
-            )
-
-            if score < best_score:
-                best_score = score
-                best_label = gm["label"]
-
-        if best_label is not None:
-            assigned_lists[best_label].append(p.astype(int))
-
-    for lab, lst in assigned_lists.items():
-        if len(lst) > 0:
-            points_by_label[lab] = np.array(lst, dtype=int)
-
-    return points_by_label
-
-def alpha_shape_mask_from_points(points_xy, shape, alpha=1.5):
-    """
-    Rasterize an alpha shape from a set of 2D points.
-
-    Parameters
-    ----------
-    points_xy : (N, 2) ndarray
-        Point coordinates in (x, y) order.
-    shape : tuple[int, int]
-        Output mask shape as (h, w).
-    alpha : float
-        Alpha-shape parameter. Larger alpha keeps more triangles and
-        approaches a convex hull; smaller alpha is more concave.
-
-    Returns
-    -------
-    mask : 2D boolean ndarray
-        Filled alpha-shape mask.
-    """
-    points_xy = np.asarray(points_xy, dtype=float)
-    h, w = shape
-
-    mask = np.zeros((h, w), dtype=bool)
-
-    if points_xy.shape[0] == 0:
-        return mask
-
-    if points_xy.shape[0] < 4:
-        xs = np.clip(np.rint(points_xy[:, 0]).astype(int), 0, w - 1)
-        ys = np.clip(np.rint(points_xy[:, 1]).astype(int), 0, h - 1)
-        mask[ys, xs] = True
-        return mask
-
-    def rasterize_polygon(poly_xy, out_mask):
-        xmin = max(0, int(np.floor(np.min(poly_xy[:, 0]))))
-        xmax = min(w - 1, int(np.ceil(np.max(poly_xy[:, 0]))))
-        ymin = max(0, int(np.floor(np.min(poly_xy[:, 1]))))
-        ymax = min(h - 1, int(np.ceil(np.max(poly_xy[:, 1]))))
-
-        if xmin > xmax or ymin > ymax:
-            return
-
-        xx, yy = np.meshgrid(np.arange(xmin, xmax + 1), np.arange(ymin, ymax + 1))
-        pts = np.column_stack([xx.ravel() + 0.5, yy.ravel() + 0.5])
-
-        path = Path(poly_xy)
-        inside = path.contains_points(pts, radius=1e-9).reshape(yy.shape)
-        out_mask[ymin:ymax + 1, xmin:xmax + 1] |= inside
-
-    try:
-        tri = Delaunay(points_xy)
-    except Exception:
-        # Fallback: convex hull
-        hull = ConvexHull(points_xy)
-        poly_xy = points_xy[hull.vertices]
-        rasterize_polygon(poly_xy, mask)
-        return mask
-
-    kept_any = False
-    thresh = 1.0 / max(alpha, 1e-12)
-
-    for simplex in tri.simplices:
-        pa, pb, pc = points_xy[simplex]
-
-        a = np.linalg.norm(pb - pc)
-        b = np.linalg.norm(pa - pc)
-        c = np.linalg.norm(pa - pb)
-
-        s = 0.5 * (a + b + c)
-        area2 = s * (s - a) * (s - b) * (s - c)
-
-        if area2 <= 0:
-            continue
-
-        area = np.sqrt(area2)
-        circum_r = (a * b * c) / (4.0 * area)
-
-        if circum_r < thresh:
-            kept_any = True
-            poly_xy = np.array([pa, pb, pc])
-            rasterize_polygon(poly_xy, mask)
-
-    if not kept_any:
-        hull = ConvexHull(points_xy)
-        poly_xy = points_xy[hull.vertices]
-        rasterize_polygon(poly_xy, mask)
-
-    return mask
-
-def build_alpha_shape_labels(
-    im_corr,
-    coords,
-    neighborhood_mask=None,
-    seed_thresh=25.0,
-    grow_thresh=6.5,
-    recover_thresh=3.0,
-    small_struct=None,
-    seed_radius=1,
-    max_seed_link_dist=9.0,
-    bridge_min_frac=0.7,
-    elongated_merge_aspect=3.0,
-    alpha=1.5,
-    min_points_for_hull=6,
-    max_assign_dist=16.0,
-):
-    """
-    Build ROI-local event labels using:
-      1. thresholded support/core masks,
-      2. seed finding,
-      3. seed grouping inside connected core components,
-      4. nearest-group assignment of support pixels,
-      5. alpha-shape rasterization per group.
-
-    Returns
-    -------
-    label_img : 2D int ndarray
-        0 = background, 1..N = blob labels
-    """
-    h, w = im_corr.shape
-    coords = np.asarray(coords, dtype=int)
-
-    if small_struct is None:
-        small_struct = np.ones((3, 3), dtype=bool)
-
-    label_img = np.zeros((h, w), dtype=np.int32)
-
-    if coords.size == 0:
-        return label_img
-
-    core_mask, support_mask = build_candidate_support_mask(
-        im_corr=im_corr,
-        neighborhood_mask=neighborhood_mask,
-        grow_thresh=grow_thresh,
-        recover_thresh=recover_thresh,
-    )
-
-    seed_pixels = find_seed_pixels(
-        im_corr=im_corr,
-        coords=coords,
-        seed_thresh=seed_thresh,
-        seed_radius=seed_radius,
-        fallback_mask=core_mask,
-    )
-
-    if len(seed_pixels) == 0:
-        return label_img
-
-    # Connected components of the confident core
-    cc_img, _ = label(core_mask, structure=small_struct)
-
-    # Assign each seed to a core connected component
-    seed_cc_ids = np.zeros(len(coords), dtype=np.int32)
-    for sid, yx in seed_pixels.items():
-        y, x = yx
-        seed_cc_ids[sid] = cc_img[y, x]
-
-    seeds_by_cc = {}
-    for sid, cc_id in enumerate(seed_cc_ids):
-        if cc_id <= 0:
-            continue
-        seeds_by_cc.setdefault(cc_id, []).append(sid)
-
-    cc_slices = find_objects(cc_img)
-
-    global_seed_groups = []
-
-    for cc_id, slc in enumerate(cc_slices, start=1):
-        if slc is None:
-            continue
-
-        local_seed_ids = seeds_by_cc.get(cc_id, [])
-        if len(local_seed_ids) == 0:
-            continue
-
-        ysl, xsl = slc
-        cc_sub = (cc_img[ysl, xsl] == cc_id)
-        core_sub = core_mask[ysl, xsl]
-
-        coords_in_cc_local = {
-            sid: np.array(
-                [
-                    seed_pixels[sid][0] - ysl.start,
-                    seed_pixels[sid][1] - xsl.start,
-                ],
-                dtype=int,
-            )
-            for sid in local_seed_ids
-        }
-
-        seed_groups = _component_seed_groups(
-            cc_mask=cc_sub,
-            coords_in_cc=coords_in_cc_local,
-            local_seed_ids=local_seed_ids,
-            grow_mask=core_sub,
-            max_seed_link_dist=max_seed_link_dist,
-            bridge_min_frac=bridge_min_frac,
-            elongated_merge_aspect=elongated_merge_aspect,
-        )
-
-        global_seed_groups.extend(seed_groups)
-
-    if len(global_seed_groups) == 0:
-        # fallback: one group per found seed
-        global_seed_groups = [[sid] for sid in seed_pixels.keys()]
-
-    group_models = build_group_axis_models(
-        cc_img=cc_img,
-        seed_groups=global_seed_groups,
-        seed_pixels=seed_pixels,
-        max_endcap_extra=4.0,
-    )
-
-    points_by_label = assign_support_pixels_to_seed_groups(
-        support_mask=support_mask,
-        group_models=group_models,
-        max_assign_dist=max_assign_dist,
-        max_perp_dist=2.0,
-        longitudinal_weight=0.05,
-        perp_weight=2.0,
-    )
-
-    for blob_label, pts in points_by_label.items():
-        if len(pts) == 0:
-            continue
-
-        if len(pts) < min_points_for_hull:
-            label_img[pts[:, 0], pts[:, 1]] = blob_label
-            continue
-
-        pts_xy = pts[:, [1, 0]]
-        mask = alpha_shape_mask_from_points(
-            points_xy=pts_xy,
-            shape=(h, w),
-            alpha=alpha,
-        )
-        label_img[mask] = blob_label
-
-    return label_img
 
 def build_event_roi(coords, h, w, radius=12, pad=2):
     y_min = max(0, coords[:, 0].min() - radius - pad)
@@ -1703,25 +1156,18 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         "use_preclassification_filter": True,
 
         # preclassification params
-        "min_xray_fraction" :0.50,
         "keep_ambiguous_events": False,
 
         # post-processing of candidate events
-        "blob_signal_thresh": 5.0,
         "peak_assign_radius": 2,
         "seed_thresh": 20.0,
-        "grow_thresh": None,
-        "recover_thresh": 3.0,
+        "edge_thresh": 4.5,
         "event_neighborhood_radius": 16,
-        "seed_radius": 1,
-        "max_seed_link_dist": 16.0,
-        "bridge_min_frac": 0.7,
-        "elongated_merge_aspect": 3.0,
 
-        # alpha-shape / geometric settings
-        "alpha": 1.5,
-        "min_points_for_hull": 6,
-        "max_assign_dist": 12.0,
+        #gaussian smooth and edge detec
+        "gaussian_sigma": 0.7,
+        "min_blob_pixels": 2,
+        "fill_holes": True,
     }
 
     params = {**default_params, **params}
@@ -1734,26 +1180,16 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     sigma_thresh = params["sigma_thresh"]
 
     transient_verification = params["transient_verification"]
-
     use_preclassification_filter = params["use_preclassification_filter"]
-
-    min_xray_fraction = params.get("min_xray_fraction", 0.50)
     keep_ambiguous_events = params["keep_ambiguous_events"]
 
-    blob_signal_thresh = params["blob_signal_thresh"]
     peak_assign_radius = params["peak_assign_radius"]
     seed_thresh = params["seed_thresh"]
-    grow_thresh = params["grow_thresh"]
-    recover_thresh = params["recover_thresh"]
+    edge_thresh = params["edge_thresh"]
     event_neighborhood_radius = params["event_neighborhood_radius"]
-    seed_radius = params["seed_radius"]
-    max_seed_link_dist = params["max_seed_link_dist"]
-    bridge_min_frac = params["bridge_min_frac"]
-    elongated_merge_aspect = params["elongated_merge_aspect"]
-
-    alpha = params["alpha"]
-    min_points_for_hull = params["min_points_for_hull"]
-    max_assign_dist = params["max_assign_dist"]
+    gaussian_sigma = params["gaussian_sigma"]
+    min_blob_pixels = params["min_blob_pixels"]
+    fill_holes = params["fill_holes"]
 
     save_dataframe = params.get("save_dataframe", True)
     output_csv = params.get("output_csv", "cr_event_analysis_results.csv")
@@ -2102,19 +1538,14 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
             h=h,
             w=w,
             small_struct=small_struct,
-            blob_signal_thresh=blob_signal_thresh,
             peak_assign_radius=peak_assign_radius,
             seed_thresh=seed_thresh,
-            grow_thresh=grow_thresh,
-            recover_thresh=recover_thresh,
-            alpha=alpha,
-            min_points_for_hull=min_points_for_hull,
-            max_assign_dist=max_assign_dist,
+            edge_thresh=edge_thresh,
             event_neighborhood_radius=event_neighborhood_radius,
-            seed_radius=seed_radius,
-            max_seed_link_dist=max_seed_link_dist,
-            bridge_min_frac=bridge_min_frac,
-            elongated_merge_aspect=elongated_merge_aspect,
+            gaussian_sigma=gaussian_sigma,
+            min_blob_pixels=min_blob_pixels,
+            fill_holes=fill_holes,
+
         ),
         frame_items,
         max_workers=blob_workers,
