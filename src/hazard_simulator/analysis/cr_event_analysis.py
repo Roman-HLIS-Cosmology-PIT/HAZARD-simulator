@@ -451,73 +451,6 @@ def preclassify_events(
 
     return rows
 
-def cluster_nearby_peaks(coords, max_dist=6.0):
-    """
-    Cluster peaks that are close and approximately collinear.
-
-    Parameters
-    ----------
-    coords : (N, 2) int ndarray
-        Peak coordinates as (y, x).
-    max_dist : float
-        Maximum Euclidean distance for connecting two peaks.
-
-    Returns
-    -------
-    groups : list[list[int]]
-        Each group is a list of indices into coords.
-    """
-    coords = np.asarray(coords, dtype=float)
-    n = len(coords)
-
-    if n <= 1:
-        return [list(range(n))]
-
-    parent = list(range(n))
-
-    def find(i):
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
-
-    def union(i, j):
-        ri, rj = find(i), find(j)
-        if ri != rj:
-            parent[rj] = ri
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            dy, dx = coords[j] - coords[i]
-            dist = float(np.hypot(dy, dx))
-            if dist > max_dist:
-                continue
-
-            # with only two points, alignment is implicit
-            union(i, j)
-
-    groups_dict = {}
-    for i in range(n):
-        groups_dict.setdefault(find(i), []).append(i)
-
-    return list(groups_dict.values())
-
-def representative_peak_indices(coords, im_corr, groups):
-    """
-    Choose one representative peak per cluster: the brightest peak.
-    """
-    rep_idxs = []
-    for grp in groups:
-        if len(grp) == 1:
-            rep_idxs.append(grp[0])
-            continue
-
-        vals = [im_corr[int(coords[i, 0]), int(coords[i, 1])] for i in grp]
-        rep_local = grp[int(np.argmax(vals))]
-        rep_idxs.append(rep_local)
-
-    return rep_idxs
-
 def build_group_axis_models(
     cc_img,
     seed_groups,
@@ -676,7 +609,6 @@ def build_event_neighborhood_mask(coords, h, w, radius=12):
 
     return mask
 
-
 def recover_labeled_blob_footprints(
     lab_img,
     im_corr,
@@ -684,16 +616,14 @@ def recover_labeled_blob_footprints(
     structure=None,
     pad=2,
     max_recover_pixels=20000,
+    max_perp_dist=2.5,
+    endcap_extra=4.0,
 ):
     """
-    Expand each already-labeled blob into connected lower-threshold pixels.
+    Directional recovery for elongated blobs.
+    Grow each label only into connected pixels that are both above threshold
 
-    This is a second hysteresis-style growth stage:
-      - The initial smart-seeded labels define the trusted event cores.
-      - Each label is then allowed to grow into nearby pixels with
-        im_corr > recover_thresh, but only if those pixels are connected
-        to that label through iterative dilation.
-
+    and geometrically consistent with the blob's current major-axis model.
     Parameters
     ----------
     lab_img : 2D int ndarray
@@ -730,8 +660,6 @@ def recover_labeled_blob_footprints(
             continue
 
         ysl, xsl = slc
-
-        # Add a little padding so recovery can reach beyond the initial slice
         y0 = max(0, ysl.start - pad)
         y1 = min(lab_img.shape[0], ysl.stop + pad)
         x0 = max(0, xsl.start - pad)
@@ -746,30 +674,69 @@ def recover_labeled_blob_footprints(
 
         if current.size > max_recover_pixels:
             print(
-                f"Recovery skipped for blob {blob_label}: "
+                f"Directional recovery skipped for blob {blob_label}: "
                 f"local region has {current.size} pixels"
             )
             continue
 
-        # Pixels that are allowed to be added during recovery
-        allowed = im_sub > recover_thresh
+        coords = np.argwhere(current).astype(float)
+        vals = np.clip(im_sub[current], 0.0, None)
 
-        # Prevent stealing pixels already assigned to another label
+        # fallback for tiny blobs
+        if len(coords) < 2 or np.sum(vals) <= 0:
+            center = coords.mean(axis=0)
+            major_axis = np.array([0.0, 1.0], dtype=float)
+            minor_axis = np.array([1.0, 0.0], dtype=float)
+            proj = np.zeros(len(coords), dtype=float)
+        else:
+            center = np.average(coords, axis=0, weights=vals)
+            X = coords - center
+            cov = (X * vals[:, None]).T @ X / np.sum(vals)
+
+            evals, evecs = np.linalg.eigh(cov)
+            order = np.argsort(evals)[::-1]
+            evecs = evecs[:, order]
+
+            major_axis = evecs[:, 0]
+            minor_axis = evecs[:, 1]
+            proj = X @ major_axis
+
+        proj_min = float(np.min(proj) - endcap_extra)
+        proj_max = float(np.max(proj) + endcap_extra)
+
         other_labels = (lab_sub != 0) & (lab_sub != blob_label)
-        allowed &= ~other_labels
 
-        # Iteratively grow only into allowed pixels
         while True:
-            grown = binary_dilation(current, structure=structure) & allowed
-            new_current = current | grown
+            frontier = binary_dilation(current, structure=structure) & (~current)
+            candidates = frontier & (im_sub > recover_thresh) & (~other_labels)
 
-            if np.array_equal(new_current, current):
+            if not np.any(candidates):
                 break
 
-            current = new_current
+            cand_pts = np.argwhere(candidates).astype(float)
+            keep = np.zeros(len(cand_pts), dtype=bool)
 
-        # Rewrite this local patch:
-        # remove old instances of this label, then write recovered footprint
+            for i, p in enumerate(cand_pts):
+                dp = p - center
+                longi = float(dp @ major_axis)
+                perp = float(abs(dp @ minor_axis))
+
+                if perp <= max_perp_dist and proj_min <= longi <= proj_max:
+                    keep[i] = True
+
+            if not np.any(keep):
+                break
+
+            kept_pts = cand_pts[keep].astype(int)
+            grew = False
+            for yy, xx in kept_pts:
+                if not current[yy, xx]:
+                    current[yy, xx] = True
+                    grew = True
+
+            if not grew:
+                break
+
         lab_sub[lab_sub == blob_label] = 0
         lab_sub[current] = blob_label
 
@@ -811,15 +778,9 @@ def analyze_blobs_by_frame(
     if grow_thresh is None:
         grow_thresh = blob_signal_thresh
 
-    #  cluster nearby survivor peaks into grouped seeds
-    peak_groups = cluster_nearby_peaks(coords, max_dist=4.0)
-    rep_local_idxs = representative_peak_indices(coords, im_corr, peak_groups)
-    coords_grouped = coords[rep_local_idxs]
-
-
     # crop to ROI
     y0, y1, x0, x1 = build_event_roi(
-        coords_grouped, h, w, radius=event_neighborhood_radius, pad=2
+        coords, h, w, radius=event_neighborhood_radius, pad=2
     )
 
     im_roi = im_corr[y0:y1, x0:x1]
@@ -828,12 +789,6 @@ def analyze_blobs_by_frame(
     coords_roi[:, 1] -= x0
     h_roi, w_roi = im_roi.shape
 
-    # grouped coords for seed building
-    coords_grouped_roi = coords_grouped.copy()
-    coords_grouped_roi[:, 0] -= y0
-    coords_grouped_roi[:, 1] -= x0
-
-
     t1 = time.perf_counter()
 
     # Neighborhood + grow mask
@@ -841,7 +796,7 @@ def analyze_blobs_by_frame(
 
     # Restrict analysis to ROI neighborhoods near merged peaks
     event_neighborhood_mask = build_event_neighborhood_mask(
-        coords_grouped_roi, h_roi, w_roi, radius=event_neighborhood_radius
+        coords_roi, h_roi, w_roi, radius=event_neighborhood_radius
     )
 
 
@@ -853,7 +808,7 @@ def analyze_blobs_by_frame(
 
     lab_img_roi = build_alpha_shape_labels(
         im_corr=im_roi,
-        coords=coords_grouped_roi,
+        coords=coords_roi,
         neighborhood_mask=event_neighborhood_mask,
         seed_thresh=seed_thresh,
         grow_thresh=grow_thresh,
