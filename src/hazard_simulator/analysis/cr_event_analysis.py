@@ -41,33 +41,33 @@ def load_data(fits_path):
     return(data)
 
 def compute_mask_med_frame(data, sigma_mult):
-    print("Finding hot pixels…")
+    print("Looking for hot pixels…")
     median_img = np.median(data, axis=0)
     mad        = np.median(np.abs(median_img - np.median(median_img)))
     sigma_est  = 1.4826 * mad
     thresh_med = np.median(median_img) + sigma_mult * sigma_est
     mask_med   = median_img > thresh_med
-    print(f"Done looking for hot pixels (σ={sigma_est:.3f}, thresh={thresh_med:.1f})")
+    print(f"Done searching for hot pixels (σ={sigma_est:.3f}, thresh={thresh_med:.1f})")
     return mask_med
 
 def compute_mask_first_frame(data, sigma_mult):
-    print("Finding very hot pixels…")
+    print("Looking for very hot pixels…")
     first_img  = data[0]
     med_first  = np.median(first_img)
     mad_first  = np.median(np.abs(first_img - med_first))
     sigma_est  = 1.4826 * mad_first
     thresh0    = med_first + sigma_mult * sigma_est
     mask0      = first_img > thresh0
-    print(f"Done looking for very hot pixels (σ={sigma_est:.3f}, thresh={thresh0:.1f})")
+    print(f"Done searching for very hot pixels (σ={sigma_est:.3f}, thresh={thresh0:.1f})")
     return mask0
 
 def compute_mask_no_response(data, sat_cut):
-    print("⏳ Finding non-responsive pixels…")
+    print("Looking for non-responsive pixels…")
     # If you wanted a row-wise tqdm you could replace the next line with a loop + tqdm
     frame_diff = np.abs(np.diff(data, axis=0))       # (Nframe-1, 4096,4096)
     med_diff   = np.median(frame_diff, axis=0)
     mask_non_res   = med_diff < sat_cut
-    print(f"Done looking for non-responsive pixesls (median(med_diff)={np.median(med_diff):.3e})")
+    print(f"Done searching for non-responsive pixesls (median(med_diff)={np.median(med_diff):.3e})")
     return mask_non_res
 
 def filter_transient_events(events, transient_verification="full_exposure"):
@@ -750,9 +750,6 @@ def analyze_blobs_by_frame(
     im_corr = data_cube[f].astype(np.float32, copy=True)
     im_corr -= np.float32(medians[f])
 
-    if grow_thresh is None:
-        grow_thresh = blob_signal_thresh
-
     # crop to ROI
     y0, y1, x0, x1 = build_event_roi(
         coords, h, w, radius=event_neighborhood_radius, pad=2
@@ -1161,11 +1158,11 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         # post-processing of candidate events
         "peak_assign_radius": 2,
         "seed_thresh": 20.0,
-        "edge_thresh": 4.5,
         "event_neighborhood_radius": 16,
 
         #gaussian smooth and edge detec
         "gaussian_sigma": 0.7,
+        "edge_thresh": 4.5,
         "min_blob_pixels": 2,
         "fill_holes": True,
     }
