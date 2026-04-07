@@ -1,7 +1,7 @@
 # script for analyzing real and simulated cosmic ray events
 # Initial creation date: 23-Mar-2026
 # Developers: Anthony Harbo Torres
-# version 0.12
+# version 0.13
 
 import os
 import time
@@ -10,23 +10,20 @@ import argparse
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from functools import partial
-import matplotlib.pyplot as plt
 from scipy.ndimage import (
     binary_dilation,
     maximum_filter,
     label,
     find_objects
 )
-from concurrent.futures import ThreadPoolExecutor
 from tqdm.contrib.concurrent import thread_map
+from concurrent.futures import ThreadPoolExecutor
 from scipy.spatial import Delaunay, ConvexHull
 from astropy.stats import sigma_clipped_stats
 from matplotlib.path import Path
 from collections import Counter
+from functools import partial
 from astropy.io import fits
-
-
 
 
 def load_data(fits_path):   
@@ -36,37 +33,29 @@ def load_data(fits_path):
         data = primary_hdu.data      # NumPy array of your image/spectrum/whatever
         header = primary_hdu.header  # FITS header metadata
 
-
-
-        # DEVELOPMENT MODE ONLY: USE A SUBSET OF THE DATACUBE
-        print("ENTERING DEVELOPER MODE (TURN OFF BEFORE COMMIT)")
-        print("Reducing frame sizes from native to 128x128")
-        #data = data[:,:128,:128]
-        # REMOVE REMOVE REMOVE BEFORE COMMIT
-
     print(f"Data shape: {data.shape}")
     print("Header keys:", list(header.keys())[:10])
     return(data)
 
 def compute_mask_med_frame(data, sigma_mult):
-    print("⏳ Finding hot pixels…")
+    print("Finding hot pixels…")
     median_img = np.median(data, axis=0)
     mad        = np.median(np.abs(median_img - np.median(median_img)))
     sigma_est  = 1.4826 * mad
     thresh_med = np.median(median_img) + sigma_mult * sigma_est
     mask_med   = median_img > thresh_med
-    print(f"✅ Done looking for hot pixels (σ={sigma_est:.3f}, thresh={thresh_med:.1f})")
+    print(f"Done looking for hot pixels (σ={sigma_est:.3f}, thresh={thresh_med:.1f})")
     return mask_med
 
 def compute_mask_first_frame(data, sigma_mult):
-    print("⏳ Finding very hot pixels…")
+    print("Finding very hot pixels…")
     first_img  = data[0]
     med_first  = np.median(first_img)
     mad_first  = np.median(np.abs(first_img - med_first))
     sigma_est  = 1.4826 * mad_first
     thresh0    = med_first + sigma_mult * sigma_est
     mask0      = first_img > thresh0
-    print(f"✅ Done looking for very hot pixels (σ={sigma_est:.3f}, thresh={thresh0:.1f})")
+    print(f"Done looking for very hot pixels (σ={sigma_est:.3f}, thresh={thresh0:.1f})")
     return mask0
 
 def compute_mask_no_response(data, sat_cut):
@@ -75,7 +64,7 @@ def compute_mask_no_response(data, sat_cut):
     frame_diff = np.abs(np.diff(data, axis=0))       # (Nframe-1, 4096,4096)
     med_diff   = np.median(frame_diff, axis=0)
     mask_non_res   = med_diff < sat_cut
-    print(f"✅ Done looking for non-responsive pixesls (median(med_diff)={np.median(med_diff):.3e})")
+    print(f"Done looking for non-responsive pixesls (median(med_diff)={np.median(med_diff):.3e})")
     return mask_non_res
 
 def filter_transient_events(events, transient_verification="full_exposure"):
@@ -106,7 +95,6 @@ def filter_transient_events(events, transient_verification="full_exposure"):
     # METHOD 1: full exposure (global Counter method)
     # ------------------------------------------------------------
     if transient_verification == "full_exposure":
-        from collections import Counter
 
         coord_counts = Counter(map(tuple, events[:, 1:]))
 
@@ -157,10 +145,10 @@ def filter_transient_events(events, transient_verification="full_exposure"):
 def find_peaks_for_frame(data_cube, index, badpix_mask, sigma_thresh,
     exclude_badpix_neighbors=False):
     image   = data_cube[index]
-    _, med, _ = sigma_clipped_stats(image, sigma=3.0, maxiters=5)
-    mad     = np.median(np.abs(image - med))
+    _, median, _ = sigma_clipped_stats(image, sigma=3.0, maxiters=5)
+    mad     = np.median(np.abs(image - median))
     sigma_e = mad * 1.4826
-    threshold = med + sigma_thresh * sigma_e
+    threshold = median + sigma_thresh * sigma_e
 
     if exclude_badpix_neighbors:
         reject_mask = binary_dilation(badpix_mask, structure=np.ones((3,3)))
@@ -181,7 +169,7 @@ def find_peaks_for_frame(data_cube, index, badpix_mask, sigma_thresh,
 
     ys, xs = np.where(cand)
     peaks  = [(index, int(y), int(x)) for y, x in zip(ys, xs)]
-    return peaks, threshold
+    return peaks, median, threshold
 
 def summed_area_table(image):
     """
@@ -255,7 +243,7 @@ def preclassify_events(
     max_secondary_peaks_for_isolated=0,
 ):
     """
-    Cheap frame-level preclassification on raw, unmerged peaks.
+    Frame-level preclassification on raw, unmerged peaks.
 
     Uses:
       - 3x3 neighbor-only support ratio
@@ -347,9 +335,17 @@ def preclassify_events(
         bbox_h = 0
         bbox_w = 0
 
-        if len(coords) >= 5:
+        bbox_area = 0
+        elongation_bbox = 1.0
+        fill_frac = 1.0
+
+        n_mask = len(coords)
+        if n_mask >= 2:
             bbox_h = int(coords[:, 0].max() - coords[:, 0].min() + 1)
             bbox_w = int(coords[:, 1].max() - coords[:, 1].min() + 1)
+            bbox_area = bbox_h * bbox_w
+            elongation_bbox = max(bbox_h, bbox_w) / max(1, min(bbox_h, bbox_w))
+            fill_frac = n_mask / max(1, bbox_area)
 
             if bbox_h >= 2 and bbox_w >= 2:
                 coords = coords.astype(float)
@@ -363,9 +359,12 @@ def preclassify_events(
                 lam2 = float(evals[1])
                 denom = lam1 + lam2
 
-                if denom > 1e-6:
-                    linearity = float(evals[0] / evals[1])
+                if denom > 1e-6 and lam2 > 1e-6:
+                    linearity = lam1 / lam2
                     anisotropy = (lam1 - lam2) / denom
+                elif denom > 1e-6:
+                    linearity = np.inf
+                    anisotropy = 1.0
                 else:
                     linearity = 1.0
                     anisotropy = 0.0
@@ -376,26 +375,49 @@ def preclassify_events(
             linearity = 1.0
             anisotropy = 0.0
 
-        is_noise_like = (
+
+        # -----------------------------
+        # bbox / mask morphology categories
+        # -----------------------------
+        is_tiny_bbox = (
+            (n_mask <= 1)
+            or (bbox_area <= 1)
+        )
+
+        bbox_supports_streak = (
+            (elongation_bbox >= 1.5)
+            or (bbox_h >= 4)
+            or (bbox_w >= 4)
+        )
+
+        is_morph_noise = (
             (n_support <= 2)
             or (center_cc_size <= 2)
+            or is_tiny_bbox
             or (peak_fraction >= 0.85 and r5 < 1.5)
         )
+
+        is_low_signal = (p < 100)
+
+        is_noise_like = is_morph_noise and is_low_signal
 
         is_isolated = (
             (r3 < support3_thresh)
             and (r5 < support5_thresh)
             and (nsec <= max_secondary_peaks_for_isolated)
-            and (linearity < 2.5)   # reject linear structures
+            and (linearity < 2.5)
             and (anisotropy < 0.55)
-        )
+        ) and not is_low_signal
 
         is_streak_like = (
             (anisotropy >= 0.80)
             and (linearity >= 5.0)
             and (r5 >= 1.5)
             and (nsec >= 2)
-        )
+            and (n_support >= 4)
+            and (center_cc_size >= 3)
+            and bbox_supports_streak
+        ) and not is_low_signal
 
         if is_noise_like:
             cls = "noise"
@@ -421,32 +443,83 @@ def preclassify_events(
             "anisotropy": float(anisotropy),
             "bbox_h_5x5": int(bbox_h),
             "bbox_w_5x5": int(bbox_w),
+            "n_mask_5x5": int(n_mask),
+            "bbox_area_5x5": int(bbox_area),
+            "elongation_bbox_5x5": float(elongation_bbox),
+            "fill_frac_5x5": float(fill_frac),
         })
 
     return rows
 
-def build_signal_mask(im_corr, blob_signal_thresh=0.0):
+def cluster_nearby_peaks(coords, max_dist=6.0):
     """
-    Build a binary mask of signal-bearing pixels from a background-subtracted image.
+    Cluster peaks that are close and approximately collinear.
 
     Parameters
     ----------
-    im_corr : 2D ndarray
-        Background-subtracted frame.
-    blob_signal_thresh : float
-        Threshold for including pixels in the signal mask.
+    coords : (N, 2) int ndarray
+        Peak coordinates as (y, x).
+    max_dist : float
+        Maximum Euclidean distance for connecting two peaks.
 
     Returns
     -------
-    signal_mask : 2D boolean ndarray
+    groups : list[list[int]]
+        Each group is a list of indices into coords.
     """
-    signal_mask = im_corr > blob_signal_thresh
+    coords = np.asarray(coords, dtype=float)
+    n = len(coords)
 
-    return signal_mask
+    if n <= 1:
+        return [list(range(n))]
+
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i, j):
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[rj] = ri
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            dy, dx = coords[j] - coords[i]
+            dist = float(np.hypot(dy, dx))
+            if dist > max_dist:
+                continue
+
+            # with only two points, alignment is implicit
+            union(i, j)
+
+    groups_dict = {}
+    for i in range(n):
+        groups_dict.setdefault(find(i), []).append(i)
+
+    return list(groups_dict.values())
+
+def representative_peak_indices(coords, im_corr, groups):
+    """
+    Choose one representative peak per cluster: the brightest peak.
+    """
+    rep_idxs = []
+    for grp in groups:
+        if len(grp) == 1:
+            rep_idxs.append(grp[0])
+            continue
+
+        vals = [im_corr[int(coords[i, 0]), int(coords[i, 1])] for i in grp]
+        rep_local = grp[int(np.argmax(vals))]
+        rep_idxs.append(rep_local)
+
+    return rep_idxs
 
 def build_group_axis_models(
     cc_img,
-    core_mask,
     seed_groups,
     seed_pixels,
     max_endcap_extra=4.0,
@@ -603,10 +676,109 @@ def build_event_neighborhood_mask(coords, h, w, radius=12):
 
     return mask
 
+
+def recover_labeled_blob_footprints(
+    lab_img,
+    im_corr,
+    recover_thresh=3.0,
+    structure=None,
+    pad=2,
+    max_recover_pixels=20000,
+):
+    """
+    Expand each already-labeled blob into connected lower-threshold pixels.
+
+    This is a second hysteresis-style growth stage:
+      - The initial smart-seeded labels define the trusted event cores.
+      - Each label is then allowed to grow into nearby pixels with
+        im_corr > recover_thresh, but only if those pixels are connected
+        to that label through iterative dilation.
+
+    Parameters
+    ----------
+    lab_img : 2D int ndarray
+        Initial label image. 0 = background, 1..N = blob labels.
+    im_corr : 2D ndarray
+        Background-subtracted image in the same ROI as lab_img.
+    recover_thresh : float
+        Lower threshold for the footprint-recovery step.
+    structure : 2D boolean ndarray or None
+        Connectivity structure for binary_dilation. Defaults to 3x3.
+    pad : int
+        Padding added around each blob slice before recovery.
+    max_recover_pixels : int
+        Bail out if a blob local region gets too large.
+
+    Returns
+    -------
+    lab_out : 2D int ndarray
+        Label image after per-blob footprint recovery.
+    """
+    if structure is None:
+        structure = np.ones((3, 3), dtype=bool)
+
+    lab_out = np.array(lab_img, copy=True)
+    n_labels = int(lab_img.max())
+
+    if n_labels <= 0:
+        return lab_out
+
+    blob_slices = find_objects(lab_img)
+
+    for blob_label, slc in enumerate(blob_slices, start=1):
+        if slc is None:
+            continue
+
+        ysl, xsl = slc
+
+        # Add a little padding so recovery can reach beyond the initial slice
+        y0 = max(0, ysl.start - pad)
+        y1 = min(lab_img.shape[0], ysl.stop + pad)
+        x0 = max(0, xsl.start - pad)
+        x1 = min(lab_img.shape[1], xsl.stop + pad)
+
+        lab_sub = lab_out[y0:y1, x0:x1]
+        im_sub = im_corr[y0:y1, x0:x1]
+
+        current = (lab_sub == blob_label)
+        if not np.any(current):
+            continue
+
+        if current.size > max_recover_pixels:
+            print(
+                f"Recovery skipped for blob {blob_label}: "
+                f"local region has {current.size} pixels"
+            )
+            continue
+
+        # Pixels that are allowed to be added during recovery
+        allowed = im_sub > recover_thresh
+
+        # Prevent stealing pixels already assigned to another label
+        other_labels = (lab_sub != 0) & (lab_sub != blob_label)
+        allowed &= ~other_labels
+
+        # Iteratively grow only into allowed pixels
+        while True:
+            grown = binary_dilation(current, structure=structure) & allowed
+            new_current = current | grown
+
+            if np.array_equal(new_current, current):
+                break
+
+            current = new_current
+
+        # Rewrite this local patch:
+        # remove old instances of this label, then write recovered footprint
+        lab_sub[lab_sub == blob_label] = 0
+        lab_sub[current] = blob_label
+
+    return lab_out
+
 def analyze_blobs_by_frame(
     f,
     idxs,
-    merged_events,
+    events,
     data_cube,
     medians,
     h,
@@ -630,7 +802,7 @@ def analyze_blobs_by_frame(
     # Setup + preprocessing
     t0 = time.perf_counter()
     
-    coords = merged_events[idxs, 1:].astype(int)
+    coords = events[idxs, 1:].astype(int)
 
     # Background-subtracted frame
     im_corr = data_cube[f].astype(np.float32, copy=True)
@@ -639,9 +811,15 @@ def analyze_blobs_by_frame(
     if grow_thresh is None:
         grow_thresh = blob_signal_thresh
 
+    #  cluster nearby survivor peaks into grouped seeds
+    peak_groups = cluster_nearby_peaks(coords, max_dist=4.0)
+    rep_local_idxs = representative_peak_indices(coords, im_corr, peak_groups)
+    coords_grouped = coords[rep_local_idxs]
+
+
     # crop to ROI
     y0, y1, x0, x1 = build_event_roi(
-        coords, h, w, radius=event_neighborhood_radius, pad=2
+        coords_grouped, h, w, radius=event_neighborhood_radius, pad=2
     )
 
     im_roi = im_corr[y0:y1, x0:x1]
@@ -650,6 +828,12 @@ def analyze_blobs_by_frame(
     coords_roi[:, 1] -= x0
     h_roi, w_roi = im_roi.shape
 
+    # grouped coords for seed building
+    coords_grouped_roi = coords_grouped.copy()
+    coords_grouped_roi[:, 0] -= y0
+    coords_grouped_roi[:, 1] -= x0
+
+
     t1 = time.perf_counter()
 
     # Neighborhood + grow mask
@@ -657,7 +841,7 @@ def analyze_blobs_by_frame(
 
     # Restrict analysis to ROI neighborhoods near merged peaks
     event_neighborhood_mask = build_event_neighborhood_mask(
-        coords_roi, h_roi, w_roi, radius=event_neighborhood_radius
+        coords_grouped_roi, h_roi, w_roi, radius=event_neighborhood_radius
     )
 
 
@@ -669,7 +853,7 @@ def analyze_blobs_by_frame(
 
     lab_img_roi = build_alpha_shape_labels(
         im_corr=im_roi,
-        coords=coords_roi,
+        coords=coords_grouped_roi,
         neighborhood_mask=event_neighborhood_mask,
         seed_thresh=seed_thresh,
         grow_thresh=grow_thresh,
@@ -682,6 +866,14 @@ def analyze_blobs_by_frame(
         alpha=alpha,
         min_points_for_hull=min_points_for_hull,
         max_assign_dist=max_assign_dist,
+    )
+
+    lab_img_roi = recover_labeled_blob_footprints(
+        lab_img=lab_img_roi,
+        im_corr=im_roi,
+        recover_thresh=recover_thresh,
+        structure=small_struct,
+        pad=2,
     )
 
 
@@ -806,107 +998,6 @@ def build_candidate_support_mask(
         core &= neighborhood_mask
 
     return core, support
-
-
-
-
-def recover_labeled_blob_footprints(
-    lab_img,
-    im_corr,
-    recover_thresh=3.0,
-    structure=None,
-    pad=2,
-    max_recover_pixels=20000,
-):
-    """
-    Expand each already-labeled blob into connected lower-threshold pixels.
-
-    This is a second hysteresis-style growth stage:
-      - The initial smart-seeded labels define the trusted event cores.
-      - Each label is then allowed to grow into nearby pixels with
-        im_corr > recover_thresh, but only if those pixels are connected
-        to that label through iterative dilation.
-
-    Parameters
-    ----------
-    lab_img : 2D int ndarray
-        Initial label image. 0 = background, 1..N = blob labels.
-    im_corr : 2D ndarray
-        Background-subtracted image in the same ROI as lab_img.
-    recover_thresh : float
-        Lower threshold for the footprint-recovery step.
-    structure : 2D boolean ndarray or None
-        Connectivity structure for binary_dilation. Defaults to 3x3.
-    pad : int
-        Padding added around each blob slice before recovery.
-    max_recover_pixels : int
-        Bail out if a blob local region gets too large.
-
-    Returns
-    -------
-    lab_out : 2D int ndarray
-        Label image after per-blob footprint recovery.
-    """
-    if structure is None:
-        structure = np.ones((3, 3), dtype=bool)
-
-    lab_out = np.array(lab_img, copy=True)
-    n_labels = int(lab_img.max())
-
-    if n_labels <= 0:
-        return lab_out
-
-    blob_slices = find_objects(lab_img)
-
-    for blob_label, slc in enumerate(blob_slices, start=1):
-        if slc is None:
-            continue
-
-        ysl, xsl = slc
-
-        # Add a little padding so recovery can reach beyond the initial slice
-        y0 = max(0, ysl.start - pad)
-        y1 = min(lab_img.shape[0], ysl.stop + pad)
-        x0 = max(0, xsl.start - pad)
-        x1 = min(lab_img.shape[1], xsl.stop + pad)
-
-        lab_sub = lab_out[y0:y1, x0:x1]
-        im_sub = im_corr[y0:y1, x0:x1]
-
-        current = (lab_sub == blob_label)
-        if not np.any(current):
-            continue
-
-        if current.size > max_recover_pixels:
-            print(
-                f"Recovery skipped for blob {blob_label}: "
-                f"local region has {current.size} pixels"
-            )
-            continue
-
-        # Pixels that are allowed to be added during recovery
-        allowed = im_sub > recover_thresh
-
-        # Prevent stealing pixels already assigned to another label
-        other_labels = (lab_sub != 0) & (lab_sub != blob_label)
-        allowed &= ~other_labels
-
-        # Iteratively grow only into allowed pixels
-        while True:
-            grown = binary_dilation(current, structure=structure) & allowed
-            new_current = current | grown
-
-            if np.array_equal(new_current, current):
-                break
-
-            current = new_current
-
-        # Rewrite this local patch:
-        # remove old instances of this label, then write recovered footprint
-        lab_sub[lab_sub == blob_label] = 0
-        lab_sub[current] = blob_label
-
-    return lab_out
 
 def process_hit(
     hit,
@@ -1434,7 +1525,6 @@ def build_alpha_shape_labels(
 
     group_models = build_group_axis_models(
         cc_img=cc_img,
-        core_mask=core_mask,
         seed_groups=global_seed_groups,
         seed_pixels=seed_pixels,
         max_endcap_extra=4.0,
@@ -1467,185 +1557,6 @@ def build_alpha_shape_labels(
 
     return label_img
 
-def build_smart_seeded_labels(
-    im_corr,
-    coords,
-    neighborhood_mask=None,
-    seed_thresh=25.0,
-    grow_thresh=6.5,
-    small_struct=None,
-    seed_radius=1,
-    max_seed_link_dist=16.0,
-    bridge_min_frac=0.7,
-    elongated_merge_aspect=3.0,
-):
-    """
-    Build event labels using a smart seeded-growth strategy.
-
-    Pipeline
-    --------
-    1. Build a low-threshold grow mask.
-    2. Build initial seeds near each merged-event coordinate.
-    3. For each connected component of the grow mask:
-       - if one seed is present, keep it as one label
-       - if multiple seeds are present, decide whether to merge them into
-         groups using bridge support / elongation
-       - if more than one final seed-group remains, split the component by
-         nearest-group assignment
-
-    Returns
-    -------
-    label_img : 2D int ndarray
-    """
-    h, w = im_corr.shape
-    coords = np.asarray(coords, dtype=int)
-
-    if small_struct is None:
-        small_struct = np.ones((3, 3), dtype=bool)
-
-    grow_mask = im_corr > grow_thresh
-    if neighborhood_mask is not None:
-        grow_mask &= neighborhood_mask
-
-    # Find one local seed pixel per merged-event coord
-    # seed_id here is local to this frame's coords array: 0..len(coords)-1
-    seed_pixels = {}
-    for seed_id, (y, x) in enumerate(coords):
-        y0 = max(0, y - seed_radius)
-        y1 = min(h, y + seed_radius + 1)
-        x0 = max(0, x - seed_radius)
-        x1 = min(w, x + seed_radius + 1)
-
-        patch = im_corr[y0:y1, x0:x1]
-        seed_patch = patch > seed_thresh
-
-        if np.any(seed_patch):
-            locs = np.argwhere(seed_patch)
-            vals = patch[seed_patch]
-            k = int(np.argmax(vals))
-            yy, xx = locs[k]
-            seed_pixels[seed_id] = np.array([y0 + yy, x0 + xx], dtype=int)
-        else:
-            # fallback: use original coord if it is inside the grow mask
-            if 0 <= y < h and 0 <= x < w and grow_mask[y, x]:
-                seed_pixels[seed_id] = np.array([y, x], dtype=int)
-
-    # Connected components of the grow mask
-    cc_img, n_cc = label(grow_mask, structure=small_struct)
-    label_img = np.zeros((h, w), dtype=np.int32)
-
-    next_label = 1
-
-    # Assign each seed to its connected component exactly once
-    # seed_cc_ids[sid] = cc_id containing that seed, or 0 if none
-   
-    seed_cc_ids = np.zeros(len(coords), dtype=np.int32)
-    for sid, yx in seed_pixels.items():
-        y, x = yx
-        seed_cc_ids[sid] = cc_img[y, x]
-
-    # Build reverse lookup: cc_id -> list of seed ids in that component
-    seeds_by_cc = {}
-    for sid, cc_id in enumerate(seed_cc_ids):
-        if cc_id <= 0:
-            continue
-        seeds_by_cc.setdefault(cc_id, []).append(sid)
-
-    # Component bounding boxes
-    cc_slices = find_objects(cc_img)
-
-    # Process each component using its slice only
-    for cc_id, slc in enumerate(cc_slices, start=1):
-        if slc is None:
-            continue
-
-        local_seed_ids = seeds_by_cc.get(cc_id, [])
-        if len(local_seed_ids) == 0:
-            continue
-
-        ysl, xsl = slc
-        cc_sub = (cc_img[ysl, xsl] == cc_id)
-        grow_sub = grow_mask[ysl, xsl]
-        label_sub = label_img[ysl, xsl]
-
-        cc_pts = np.argwhere(cc_sub)
-        n_cc_pix = cc_pts.shape[0]
-
-        max_component_pixels = 10000
-        max_component_seeds = 18
-
-        # Cheap bailout before expensive grouping
-        if n_cc_pix > max_component_pixels:
-            label_sub[cc_sub] = next_label
-            print(
-                f"Max component pixels exceeded on cc_id {cc_id} "
-                f"[# pix = {n_cc_pix}], assigning label {next_label}"
-            )
-            next_label += 1
-            continue
-
-        if len(local_seed_ids) > max_component_seeds:
-            label_sub[cc_sub] = next_label
-            print(
-                f"Max component seeds exceeded on cc_id {cc_id} "
-                f"[# seeds = {len(local_seed_ids)}], assigning label {next_label}"
-            )
-            next_label += 1
-            continue
-
-        # Convert seed coordinates into the LOCAL coordinate system
-        # of this component slice, so they match cc_sub and grow_sub.
-        coords_in_cc_local = {
-            sid: np.array(
-                [
-                    seed_pixels[sid][0] - ysl.start,
-                    seed_pixels[sid][1] - xsl.start,
-                ],
-                dtype=int,
-            )
-            for sid in local_seed_ids
-        }
-
-        # Smart grouping of seeds inside this connected component
-        seed_groups = _component_seed_groups(
-            cc_mask=cc_sub,
-            coords_in_cc=coords_in_cc_local,
-            local_seed_ids=local_seed_ids,
-            grow_mask=grow_sub,
-            max_seed_link_dist=max_seed_link_dist,
-            bridge_min_frac=bridge_min_frac,
-            elongated_merge_aspect=elongated_merge_aspect,
-        )
-
-        if len(seed_groups) == 1:
-            label_sub[cc_sub] = next_label
-            next_label += 1
-            continue
-
-        # Otherwise split the component by nearest seed-group
-        group_seed_pts = []
-        for group in seed_groups:
-            pts = np.array([coords_in_cc_local[sid] for sid in group], dtype=float)
-            group_seed_pts.append(pts)
-
-        for yy, xx in cc_pts:
-            best_group = None
-            best_d2 = np.inf
-
-            p = np.array([yy, xx], dtype=float)
-
-            for gi, pts in enumerate(group_seed_pts):
-                d2 = np.min(np.sum((pts - p) ** 2, axis=1))
-                if d2 < best_d2:
-                    best_d2 = d2
-                    best_group = gi
-
-            label_sub[yy, xx] = next_label + best_group
-
-        next_label += len(seed_groups)
-
-    return label_img
-
 def build_event_roi(coords, h, w, radius=12, pad=2):
     y_min = max(0, coords[:, 0].min() - radius - pad)
     y_max = min(h, coords[:, 0].max() + radius + pad + 1)
@@ -1654,10 +1565,6 @@ def build_event_roi(coords, h, w, radius=12, pad=2):
     return y_min, y_max, x_min, x_max
 
 # HELPER FUNCTIONS
-def _prep_frame(data_cube, frame_index):
-    img   = data_cube[frame_index].astype(np.float32)
-    _, med, _ = sigma_clipped_stats(img, sigma=3.0, maxiters=15)
-    return frame_index, med
 
 def _clipped_box_sum(img, y, x, radius):
     h, w = img.shape
@@ -1665,10 +1572,6 @@ def _clipped_box_sum(img, y, x, radius):
     x0, x1 = max(x - radius, 0), min(x + radius + 1, w)
     return img[y0:y1, x0:x1].sum()
 
-def _compute_frame_median(frame_index, data_cube):
-    img = data_cube[frame_index].astype(np.float32)
-    _, med, _ = sigma_clipped_stats(img, sigma=3.0, maxiters=15)
-    return frame_index, med
 
 def _gini_coefficient(values):
     """
@@ -1846,7 +1749,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
 
         # preclassification params
         "min_xray_fraction" :0.50,
-        "keep_ambiguous_events": True,
+        "keep_ambiguous_events": False,
 
         # post-processing of candidate events
         "blob_signal_thresh": 5.0,
@@ -1941,9 +1844,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     mask_workers = min(num_of_cores, 16)
     peak_workers = min(num_of_cores, 12)
     merge_workers = min(num_of_cores, 8)
-    median_workers = min(num_of_cores, 8)
     blob_workers = min(num_of_cores, 10)
-    hit_workers = min(num_of_cores, 12)
 
     #X-ray energy (in eV), will need this later
     xray_en = 5898.75
@@ -1975,20 +1876,20 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         now = time.perf_counter()
 
         # Print the results of each badpix mask
-        print("🔗 Combining masks into one boolean array…")
+        print("Combining masks into one boolean array…")
         base_mask = mask_hot | mask_veryhot | mask_non_res
 
         # create a mask for pixels adjacent to a pixel with flagged response: any neighbor of the base_mask
-        print("⏳ Finding all adjacent pixels…")
+        print("Finding all adjacent pixels…")
 
         #create small structure (3x3 grid) for binary dilation and future uses
         small_struct =np.ones((3,3), dtype=bool)
         mask_adj  = binary_dilation(base_mask, structure=small_struct) & ~base_mask
-        print("✅ Done with adjacent pixel mask")
+        print("Done with adjacent pixel mask")
 
-        print("🔗 Combining all masks into final array…")
+        print("Combining all masks into final array…")
         badpix_mask = base_mask | mask_adj
-        print("🎉 badpix_mask ready, shape =", badpix_mask.shape)
+        print("badpix_mask ready, shape =", badpix_mask.shape)
 
         print("Comparing to percentages from Hirata, 2024, Table 2:")
         # fractions in percent
@@ -2016,21 +1917,19 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         np.save(badpix_mask_name, badpix_mask)
         print(f"Badpix mask saved as {badpix_mask_name}")
     else:
+        small_struct = np.ones((3,3), dtype=bool)
         #check the time
         badpix_time = time.perf_counter() - now
         total_time = time.perf_counter() - start_time
         print("Using provided bad pixel mask (skipping computation)")
         print(f"Time to load badpix mask: {badpix_time}s; total time elapsed: {total_time}s")
         
-
-
     #check the time
     now = time.perf_counter()
 
-    # ------------------------------------------------------------
-    # Peak finding
-    # ------------------------------------------------------------
-    print("Finding candidate peaks...")
+    # Peak finding via median and MAD
+    print("Calculating median of each frame to identify outliers." \
+    " \n These outlier peaks will be our event candidates")
 
     find_peaks_worker = partial(
         find_peaks_for_frame,
@@ -2048,12 +1947,15 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     )
 
     all_events = []
+    frame_medians = np.zeros(Nframe, dtype=float)
     frame_thresholds = np.zeros(Nframe, dtype=float)
 
     for frame_index, result in enumerate(peak_results):
-        peaks, threshold = result
+        peaks, median, threshold = result
         frame_thresholds[frame_index] = threshold
+        frame_medians[frame_index] = median
         all_events.extend(peaks)
+        
 
     if len(all_events) == 0:
         print("No candidate peaks found.")
@@ -2061,17 +1963,12 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
             "frame", "y", "x", "event_index", "class",
             "median", "sum3x3_DN", "sum3x3_e", "sum5x5_DN", "sum5x5_e",
             "blob_label", "blob_DN", "blob_e", "n_pix_blob",
-            "major_extent_geom", "minor_extent_geom",
-            "major_extent_pix", "major_extent_um",
-            "minor_extent_pix", "minor_extent_um",
-            "aspect_ratio_blob", "orientation_deg_blob",
-            "gini_blob", "supercell_gain",
-            "peak_val_pre", "r3_pre", "r5_pre", "n_secondary_5x5_pre",
         ]
 
         empty_cols_xray = [
             "frame", "y", "x", "event_index", "class",
-            "peak_val", "r3", "r5", "n_secondary_5x5",
+            "median", "sum3x3_DN", "sum3x3_e", "sum5x5_DN", "sum5x5_e",
+            "blob_label", "blob_DN", "blob_e", "n_pix_blob",
         ]
         return pd.DataFrame(columns=empty_cols_streak), pd.DataFrame(columns=empty_cols_xray)
 
@@ -2083,73 +1980,27 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     now = time.perf_counter()
 
 
-    # ------------------------------------------------------------
     # Previous-frame / full-exposure transient verification
-    # ------------------------------------------------------------
+    print("Events of interest are transients, so we'll use a transient-only filter")
     print(f"Applying transient verification mode: {transient_verification}")
 
     single_epoch_events = filter_transient_events(
         events,
         transient_verification=transient_verification,
     )
-
+    print(f"Removed {len(events)-len(single_epoch_events)} events")
     print(f"Single-epoch peaks kept: {len(single_epoch_events)}/{len(events)}, proportion: {(len(single_epoch_events) / len(events)):.2%}")
 
-
-    # ------------------------------------------------------------
-    # Skip first merge step
-    # ------------------------------------------------------------
-    print("Skipping first peak-merger step; using raw peaks for preclassification.")
-    merged_events = single_epoch_events.copy()
-    #merged_events = events.copy() #this was this old way
-
-    merge_time = time.perf_counter() - now
-    total_time = time.perf_counter() - start_time
-    print(f"Time to skip initial merge stage: {merge_time:.2f}s; total time elapsed: {total_time:.2f}s")
-    now = time.perf_counter()
-
-    if merged_events.size == 0:
-        print("No candidate events found after peak finding.")
-        return pd.DataFrame(), pd.DataFrame()
-
-    print(f"Passing {len(merged_events)} raw peaks directly into preclassification")
-
     # generate initial pandas dataframe
-    print("Computing frame medians to acquire signal background")
-    # ---- frame medians ----
-    medians = np.zeros(Nframe, dtype=float)
 
-    compute_frame_median_worker = partial(_compute_frame_median, data_cube=data_cube)
-
-    median_results = thread_map(
-        compute_frame_median_worker,
-        range(Nframe),
-        max_workers=median_workers,
-        desc="Computing frame medians",
-        unit="frame"
-    )
-
-    for frame_index, median in median_results:
-        medians[frame_index] = median
-
-    print("Summing up event pixels")
-
-    median_time = time.perf_counter() - now
-    total_time = time.perf_counter() - start_time
-    print(f"Time to compute frame medians: {median_time:.2f}s; total time elapsed: {total_time:.2f}s")
-    now = time.perf_counter()
-
-    # ------------------------------------------------------------
     # Build frame -> event indices mapping
-    # ------------------------------------------------------------
     event_idxs = {
-        f: np.where(merged_events[:, 0] == f)[0]
-        for f in np.unique(merged_events[:, 0])
+        f: np.where(single_epoch_events[:, 0] == f)[0]
+        for f in np.unique(single_epoch_events[:, 0])
     }
 
-    # ------------------------------------------------------------
     # preclassification on raw peaks
-    # ------------------------------------------------------------
+
     print("Preclassifying raw peaks...")
     pre_rows = []
 
@@ -2158,9 +2009,9 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
             return preclassify_events(
                 f=f,
                 idxs=event_idxs[f],
-                events=merged_events,
+                events=single_epoch_events,
                 data_cube=data_cube,
-                medians=medians,
+                medians=frame_medians,
                 support3_thresh=0.18,
                 support5_thresh=0.35,
                 secondary_peak_rel_thresh=0.35,
@@ -2177,7 +2028,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
             ):
                 pre_rows.extend(rows_f)
     else:
-        for idx, (f, y, x) in enumerate(merged_events):
+        for idx, (f, y, x) in enumerate(single_epoch_events):
             pre_rows.append({
                 "event_index": int(idx),
                 "frame": int(f),
@@ -2207,28 +2058,22 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     timestamp = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
     pre_df_name = _timestamped_name("cr_event_analysis_preclassifier.csv",timestamp,on_HPC)
     medians_name =_timestamped_name("cr_event_analysis_preclassifier_medians.npy",timestamp,on_HPC)
-    np.save(medians_name, medians)
+    np.save(medians_name, frame_medians)
     pre_df.to_csv(pre_df_name, index=False)
     print(f"Pre-classification dataframe saved as {pre_df_name}, medians numpy array saved as {medians_name}")
 
     # Early sanity check:
-    # if likely_xray fraction is too small, stop early
-    n_total = len(pre_df)
-    n_xray = int(class_counts.get("likely_xray", 0))
-    frac_xray = n_xray / n_total
+    # if likely_streak is too small, stop early
+    # n_total = len(pre_df)
+    n_streaks = int(class_counts.get("likely_streak", 0))
 
-    print(f"likely_xray fraction = {n_xray}/{n_total} = {frac_xray:.3f}")
+    print(f"likely_streak found = {n_streaks}")
 
-    if frac_xray < min_xray_fraction:
+    if n_streaks < 10: # change this to be algorithmic later, perhaps based on percent
         print(
-            f"Early exit: likely_xray fraction is below {min_xray_fraction*100}%. "
-            "This suggests the preclassifier is not rejecting enough obvious x-rays yet."
-        )
+            f"Early exit: number of likely streaks is too low")
 
-        # optional: save the xray subset too, for debugging
-        df_xrays_debug = pre_df.loc[pre_df["class"] == "likely_xray"].copy()
-
-        return pre_df, pre_df.loc[pre_df["class"] == "likely_xray"].copy()
+        return 0
 
 
     pre_time = time.perf_counter() - now
@@ -2236,9 +2081,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     print(f"Time for preclassification: {pre_time:.2f}s; total time elapsed: {total_time:.2f}s")
     now = time.perf_counter()
 
-    # ------------------------------------------------------------
     # Separate likely x-rays immediately
-    # ------------------------------------------------------------
     df_xrays = pre_df.loc[pre_df["class"] == "likely_xray"].copy()
 
     if len(df_xrays):
@@ -2248,9 +2091,8 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         ]
         df_xrays = df_xrays[xray_cols]
 
-    # ------------------------------------------------------------
     # survivor selection
-    # ------------------------------------------------------------
+
     if keep_ambiguous_events:
         keep_classes = {"likely_streak", "ambiguous"}
     else:
@@ -2263,7 +2105,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
 
     survivor_idx = np.unique(survivor_idx)
 
-    print(f"Post-classification survivors: {len(survivor_idx)} / {len(merged_events)} raw-peak candidates")
+    print(f"Post-classification survivors: {len(survivor_idx)} / {len(single_epoch_events)} raw-peak candidates")
 
     if len(survivor_idx) == 0:
         print("No post-classification survivors found.")
@@ -2278,11 +2120,11 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
             "gini_blob", "supercell_gain",
             "peak_val_pre", "r3_pre", "r5_pre", "n_secondary_5x5_pre",
         ])
-        return df_streaks, df_xrays
+        return df_streaks, pre_df
 
     idxs_by_frame_survivor = {}
     for idx in survivor_idx:
-        f = int(merged_events[idx, 0])
+        f = int(single_epoch_events[idx, 0])
         idxs_by_frame_survivor.setdefault(f, []).append(idx)
 
     idxs_by_frame_survivor = {
@@ -2290,9 +2132,8 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         for f, v in idxs_by_frame_survivor.items()
     }
 
-    # ------------------------------------------------------------
+
     # blob analysis only on survivors
-    # ------------------------------------------------------------
     print("Analyzing survivor blobs...")
     frame_items = list(idxs_by_frame_survivor.items())
 
@@ -2300,9 +2141,9 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         lambda item: analyze_blobs_by_frame(
             f=item[0],
             idxs=item[1],
-            merged_events=merged_events,
+            events=single_epoch_events,
             data_cube=data_cube,
-            medians=medians,
+            medians=frame_medians,
             h=h,
             w=w,
             small_struct=small_struct,
@@ -2335,7 +2176,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     blob_major_extent_geom = {}
     blob_minor_extent_geom = {}
     blob_ginis = {}
-    hit_blob_label = np.zeros(len(merged_events), dtype=int)
+    hit_blob_label = np.zeros(len(single_epoch_events), dtype=int)
 
     for out in blob_results:
         f = int(out["frame"])
@@ -2358,9 +2199,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     print(f"Time to analyze survivor blobs: {blob_time:.2f}s; total time elapsed: {total_time:.2f}s")
     now = time.perf_counter()
 
-    # ------------------------------------------------------------
     # Build final dataframe
-    # ------------------------------------------------------------
     print("Building survivor dataframe...")
 
     final_rows = []
@@ -2368,7 +2207,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     pre_lookup = pre_df.set_index("event_index")
 
     for idx in survivor_idx:
-        frame, y, x = merged_events[idx].astype(int)
+        frame, y, x = single_epoch_events[idx].astype(int)
         blob_label = int(hit_blob_label[idx])
 
         pre_row = pre_lookup.loc[idx]
@@ -2387,7 +2226,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
                 "frame": int(frame),
                 "y": int(y),
                 "x": int(x),
-                "median": medians[frame],
+                "median": frame_medians[frame],
                 "sum3x3_DN": np.nan,
                 "sum3x3_e": np.nan,
                 "sum5x5_DN": np.nan,
@@ -2416,7 +2255,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         row = process_hit(
             hit=hit,
             data_cube=data_cube,
-            medians=medians,
+            medians=frame_medians,
             gain_array=gain_array,
             supercell_size=supercell_size,
             blob_sums=blob_sums,
@@ -2461,14 +2300,12 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     print(f"Time to create output dataframes: {build_df_time:.2f}s; total time elapsed: {total_time:.2f}s")
     now = time.perf_counter()
 
-    # ------------------------------------------------------------
     # Save outputs
-    # ------------------------------------------------------------
-    output_csv_final = _timestamped_name(output_csv, on_HPC)
-    output_xray_csv_final = _timestamped_name(output_xray_csv, on_HPC)
+    output_csv_final = _timestamped_name(output_csv, timestamp, on_HPC)
+    output_xray_csv_final = _timestamped_name(output_xray_csv, timestamp, on_HPC)
 
-    print(f"Streak/survivor output file: {output_csv_final}")
-    print(f"X-ray output file: {output_xray_csv_final}")
+    print(f"Streak/survivor output filename: {output_csv_final}")
+    print(f"X-ray output filename: {output_xray_csv_final}")
 
     if save_dataframe:
         if len(df_streaks):
