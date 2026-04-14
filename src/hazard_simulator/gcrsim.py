@@ -2739,7 +2739,7 @@ class CosmicRaySimulation:
         species_streaks = []
         primary_counter = 1  # Global primary counter for unique primary_idx
 
-        for j in tqdm(range(len(num_part_table)), desc="Processing energy bins", disable=self.progress_bar):
+        for j in tqdm(range(len(num_part_table)), desc="Processing energy bins", disable = not self.progress_bar):
             lambda_value = num_part_table["Mean # of particles"].iat[j]
             if lambda_value <= 0 or not np.isfinite(lambda_value):
                 continue
