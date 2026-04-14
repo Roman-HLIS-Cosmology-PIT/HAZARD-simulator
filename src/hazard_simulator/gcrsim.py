@@ -1287,7 +1287,7 @@ class CosmicRaySimulation:
             sim = cls(
                 species_index=idx,
                 grid_size=grid_size,
-                progress_bar=progress_bar,
+                progress_bar=False,
                 apply_padding=apply_padding,
                 pad_pixels=pad_pixels,
                 pad_mode=pad_mode,
