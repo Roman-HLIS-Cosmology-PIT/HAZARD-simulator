@@ -549,7 +549,7 @@ def build_smoothed_seeded_blob_labels(
     neighborhood_mask=None,
     structure=None,
     gaussian_sigma=0.8,
-    edge_thresh=3.0,
+    edge_thresh=30.0,
     seed_thresh=20.0,
     min_blob_pixels=1,
     fill_holes=True,
@@ -733,7 +733,7 @@ def analyze_blobs_by_frame(
     small_struct,   
     peak_assign_radius=2,
     seed_thresh=20.0,
-    edge_thresh=3.0,
+    edge_thresh=30.0,
     event_neighborhood_radius=16,
     gaussian_sigma=1.0,
     min_blob_pixels=1,
@@ -1137,7 +1137,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         "supercell_size": 128,
         "sigma_mult": 12,
         "sat_cut": 5.999,
-        "sigma_thresh": 4.51,
+        "sigma_thresh": 5.0,
 
         # output control
         "save_dataframe": True,
@@ -1157,12 +1157,12 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
 
         # post-processing of candidate events
         "peak_assign_radius": 2,
-        "seed_thresh": 20.0,
+        "seed_thresh": 30.0,
         "event_neighborhood_radius": 16,
 
         #gaussian smooth and edge detec
         "gaussian_sigma": 0.7,
-        "edge_thresh": 4.5,
+        "edge_thresh": 30.0,
         "min_blob_pixels": 2,
         "fill_holes": True,
     }
@@ -1316,8 +1316,10 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     now = time.perf_counter()
 
     # Peak finding via median and MAD
-    print("Calculating median of each frame to identify outliers." \
-    " \n These outlier peaks will be our event candidates")
+    peak_threshold_estimate = sigma_thresh * (6) * 1.4826
+    print(f"Calculating median of each frame to identify outliers." \
+    " \n These outlier peaks will be our event candidates" \
+        f"\n Using a threshold sigma of {sigma_thresh} * MAD * 1.4826 ~ {peak_threshold_estimate} DN")
 
     find_peaks_worker = partial(
         find_peaks_for_frame,
@@ -1343,7 +1345,9 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         frame_thresholds[frame_index] = threshold
         frame_medians[frame_index] = median
         all_events.extend(peaks)
-        
+    
+    print(f"Frame medians: {frame_medians}")
+    print(f"Frame thresholds: {frame_thresholds}")
 
     if len(all_events) == 0:
         print("No candidate peaks found.")
@@ -1388,8 +1392,20 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     }
 
     # preclassification on raw peaks
+    support3_thresh = 0.22 # was 0.18
+    support5_thresh = 0.40 # was 0.35
+    secondary_peak_rel_thresh = 0.30  #was 0.35
+    secondary_peak_abs_thresh = 16.0 # was None
+
+
 
     print("Preclassifying raw peaks...")
+    print("Using the following classification parameters:")
+    print(f"3x3 support = {support3_thresh}")
+    print(f"5x5 support = {support5_thresh}")
+    print(f"Secondary peak relative threshold = {secondary_peak_rel_thresh*100}%")
+    print(f"Secondary peak absolute threshold = {secondary_peak_abs_thresh} DN")
+
     pre_rows = []
 
     if use_preclassification_filter:
@@ -1400,10 +1416,10 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
                 events=single_epoch_events,
                 data_cube=data_cube,
                 medians=frame_medians,
-                support3_thresh=0.18,
-                support5_thresh=0.35,
-                secondary_peak_rel_thresh=0.35,
-                secondary_peak_abs_thresh=None,
+                support3_thresh=support3_thresh,
+                support5_thresh=support5_thresh,
+                secondary_peak_rel_thresh=secondary_peak_rel_thresh,
+                secondary_peak_abs_thresh=secondary_peak_abs_thresh,
                 max_secondary_peaks_for_isolated=0,
             )
 
