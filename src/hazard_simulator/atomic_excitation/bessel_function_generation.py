@@ -11,22 +11,6 @@ import asdf
 import numpy as np
 from scipy.special import spherical_jn
 
-# Define parameters n, zeta, and r
-n = np.arange(1, 481)
-zeta_nonSI = np.arange(1.54, 478 + 1.54, 1.54)  # noqa: N816
-zeta = zeta_nonSI * 5067730719.0  # Converts from KeV/H_bar*c to 1/m
-
-
-r_min = 5.2946541e-11 / 80 / 3
-r_max = 2e-10
-r = np.linspace(r_min, r_max, 500)
-
-# Update so each function calls a number of rs with a delta r and so on
-# Next step is to plot one slice for a given zeta value; should peak around l = r times zeta
-
-# Build 3D meshgrid for n, zeta, and r
-n_mesh, zeta_mesh, r_mesh = np.meshgrid(n, zeta, r, indexing="ij")
-
 
 def bessel_j(n, zeta, r):
     """
@@ -126,19 +110,46 @@ def bessel_pi(n, zeta, r):
     return (bessel_regular / (zeta * r)) + bessel_prime
 
 
-def bessel_main(outfile):
+def bessel_main(outfile=None, nmax=480, dzeta=1.54, nzeta=311, r_min=2.206105875e-13, r_max=2.0e-10, nr=500):
     """
     Main function to output the results to an ASDF file given a name
 
     Parameters
     ----------
-    outfile : str
-        File name for where to store the table of results
+    outfile : str, optional
+        File name for where to store the table of results. (If None, then no output.)
+    nmax : int, optional
+        The maximum value of total angular momentum to build.
+    dzeta : float, optional
+        The spacing of wavenumber samples in keV^-1.
+    nzeta : int, optional
+        The number of wavenumbers to generate (so spaced as `dzeta`, 2 * `dzeta`, ...
+        up to `nzeta` * `dzeta`).
+    r_min, r_max : float, optional
+        The minimum and maximum radius for the table in meters (inclusive).
+    nr : int, optional
+        The number of radius samples.
 
     Returns
     -------
-    None
+    dict
+        A dictionary (that could be converted to an ASDF tree if saved to a file).
+
     """
+
+    # Define parameters n, zeta, and r
+    n = np.arange(1, nmax + 1)
+    zeta_nonSI = dzeta * np.arange(1, nzeta + 1)  # noqa: N816
+    zeta = zeta_nonSI * 5067730719.0  # Converts from keV/H_bar*c to 1/m
+
+    r = np.linspace(r_min, r_max, nr)
+
+    # Update so each function calls a number of rs with a delta r and so on
+    # Next step is to plot one slice for a given zeta value; should peak around l = r times zeta
+
+    # Build 3D meshgrid for n, zeta, and r
+    n_mesh, zeta_mesh, r_mesh = np.meshgrid(n, zeta, r, indexing="ij")
+
     # Evaluate each of the Bessel functions for the defined parameters
     bessel_j_values = bessel_j(n_mesh, zeta_mesh, r_mesh)
     bessel_j_prime_values = bessel_j_prime(n_mesh, zeta_mesh, r_mesh)
@@ -162,11 +173,14 @@ def bessel_main(outfile):
     }
 
     # Save the data to an ASDF file
-    af = asdf.AsdfFile(tree)
-    af.write_to(outfile, all_array_compression="zlib")
-    print("Library saved to bessel_library.asdf")
-    print(f" n shape: {bessel_j_values.shape}")
-    print(f" Array size: {bessel_j_values.nbytes / 1e6:.2f} MB per function")
+    if outfile is not None:
+        af = asdf.AsdfFile(tree)
+        af.write_to(outfile, all_array_compression="zlib")
+    # print("Library saved to bessel_library.asdf")
+    # print(f" n shape: {bessel_j_values.shape}")
+    # print(f" Array size: {bessel_j_values.nbytes / 1e6:.2f} MB per function")
+
+    return tree
 
 
 """
