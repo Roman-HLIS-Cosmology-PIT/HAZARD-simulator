@@ -1,18 +1,19 @@
 # script for analyzing real and simulated cosmic ray events
 # Initial creation date: 23-Mar-2026
 # Developers: Anthony Harbo Torres
+# with technical advice by Christopher Hirata
 # Notes: Gaussian smoothing and edge detection idea
-#           provided by Emily Koivu
-# version 0.14
+# provided by Emily Koivu
+# version 0.15
 
 import os
 import time
 import json
 import argparse
-import numpy as np
-import pandas as pd
+import numpy as np # pyright: ignore[reportMissingImports]
+import pandas as pd # pyright: ignore[reportMissingModuleSource]
 from tqdm import tqdm
-from scipy.ndimage import (
+from scipy.ndimage import ( # pyright: ignore[reportMissingImports]
     binary_dilation,
     binary_erosion,
     binary_fill_holes,
@@ -23,10 +24,10 @@ from scipy.ndimage import (
 )
 from tqdm.contrib.concurrent import thread_map
 from concurrent.futures import ThreadPoolExecutor
-from astropy.stats import sigma_clipped_stats
+from astropy.stats import sigma_clipped_stats # pyright: ignore[reportMissingImports]
 from collections import Counter
 from functools import partial
-from astropy.io import fits
+from astropy.io import fits # pyright: ignore[reportMissingImports]
 
 
 def load_data(fits_path):   
@@ -303,11 +304,11 @@ def preclassify_events(
             footprint_size=3,
         )
 
-        # local linearity via PCA on small ROI
-        y0, y1, x0, x1 = extract_box_bounds(y, x, im_corr.shape, half_size=2)
+        # 11x11
+        y0, y1, x0, x1 = extract_box_bounds(y, x, im_corr.shape, half_size=5)
+
         roi = im_corr[y0:y1, x0:x1]
 
-        # 5x5 local ROI already exists here
         roi_pos = np.clip(roi, 0.0, None)
         sum_pos = float(roi_pos.sum())
 
@@ -331,9 +332,29 @@ def preclassify_events(
 
 
         # threshold to select signal pixels
-        mask = roi > (0.35 * p)
+        #mask = roi > (0.35 * p) THIS WAS CAUSING HIGH ENERGY STREAKS TO BE IGNORED
+
+        #instead we'll use
+        shape_floor_abs = 30.0          # same logic as edge_thresh/CDS argument
+        shape_floor_rel = 0.01 * p      # much less aggressive than 0.35*p
+
+        mask = roi > max(shape_floor_abs, shape_floor_rel)
 
         coords = np.argwhere(mask)
+
+        major_extent_pre = 0.0
+        minor_extent_pre = 0.0
+        aspect_ratio_pre = 1.0
+
+        if len(coords) >= 2:
+            vals = roi[mask]
+            vals_pos = np.clip(vals, 0.0, None)
+
+            pca_metrics = blob_pca_metrics(coords, weights=vals_pos)
+
+            major_extent_pre = pca_metrics["major_extent_pix"]
+            minor_extent_pre = pca_metrics["minor_extent_pix"]
+            aspect_ratio_pre = pca_metrics["aspect_ratio"]
 
         bbox_h = 0
         bbox_w = 0
@@ -342,38 +363,32 @@ def preclassify_events(
         elongation_bbox = 1.0
         fill_frac = 1.0
 
+        long_axis_bbox = 0
+        short_axis_bbox = 0
+        bbox_aspect_ratio = 1.0
+
         n_mask = len(coords)
+
         if n_mask >= 2:
-            bbox_h = int(coords[:, 0].max() - coords[:, 0].min() + 1)
-            bbox_w = int(coords[:, 1].max() - coords[:, 1].min() + 1)
-            bbox_area = bbox_h * bbox_w
-            elongation_bbox = max(bbox_h, bbox_w) / max(1, min(bbox_h, bbox_w))
-            fill_frac = n_mask / max(1, bbox_area)
+            vals = roi[mask]
+            vals_pos = np.clip(vals, 0.0, None)
 
-            if bbox_h >= 2 and bbox_w >= 2:
-                coords = coords.astype(float)
-                center = coords.mean(axis=0)
-                X = coords - center
-                cov = (X.T @ X) / len(X)
-                evals, _ = np.linalg.eigh(cov)
-                evals = np.sort(evals)[::-1]
+            pca_metrics = blob_pca_metrics(coords, weights=vals_pos)
 
-                lam1 = float(evals[0])
-                lam2 = float(evals[1])
-                denom = lam1 + lam2
+            linearity = (
+                pca_metrics["major_extent_pix"] /
+                max(pca_metrics["minor_extent_pix"], 1e-6)
+            )
 
-                if denom > 1e-6 and lam2 > 1e-6:
-                    linearity = lam1 / lam2
-                    anisotropy = (lam1 - lam2) / denom
-                elif denom > 1e-6:
-                    linearity = np.inf
-                    anisotropy = 1.0
-                else:
-                    linearity = 1.0
-                    anisotropy = 0.0
-            else:
-                linearity = 1.0
-                anisotropy = 0.0
+            denom = (
+                pca_metrics["major_extent_pix"] +
+                pca_metrics["minor_extent_pix"]
+            )
+
+            anisotropy = (
+                (pca_metrics["major_extent_pix"] - pca_metrics["minor_extent_pix"]) / denom
+                if denom > 1e-6 else 0.0
+            )
         else:
             linearity = 1.0
             anisotropy = 0.0
@@ -388,9 +403,8 @@ def preclassify_events(
         )
 
         bbox_supports_streak = (
-            (elongation_bbox >= 1.5)
-            or (bbox_h >= 4)
-            or (bbox_w >= 4)
+            (long_axis_bbox >= 4)
+            and (bbox_aspect_ratio >= 1.5)
         )
 
         is_morph_noise = (
@@ -413,13 +427,13 @@ def preclassify_events(
         ) and not is_low_signal
 
         is_streak_like = (
-            (anisotropy >= 0.80)
-            and (linearity >= 5.0)
-            and (r5 >= 1.5)
-            and (nsec >= 2)
-            and (n_support >= 4)
-            and (center_cc_size >= 3)
-            and bbox_supports_streak
+            (
+                (aspect_ratio_pre >= 1.4)     # Primary discriminator
+                or
+                (long_axis_bbox >= 5)         # fallback for very large events
+            )
+            and (major_extent_pre >= 3.5)     # must be spatially extended
+            and (n_support >= 3)
         ) and not is_low_signal
 
         if is_noise_like:
@@ -449,7 +463,13 @@ def preclassify_events(
             "n_mask_5x5": int(n_mask),
             "bbox_area_5x5": int(bbox_area),
             "elongation_bbox_5x5": float(elongation_bbox),
+            "long_axis_bbox_5x5": int(long_axis_bbox),
+            "short_axis_bbox_5x5": int(short_axis_bbox),
+            "bbox_aspect_ratio_5x5": float(bbox_aspect_ratio),
             "fill_frac_5x5": float(fill_frac),
+            "major_extent_pre": float(major_extent_pre),
+            "minor_extent_pre": float(minor_extent_pre),
+            "aspect_ratio_pre": float(aspect_ratio_pre),
         })
 
     return rows
@@ -549,8 +569,8 @@ def build_smoothed_seeded_blob_labels(
     neighborhood_mask=None,
     structure=None,
     gaussian_sigma=0.8,
-    edge_thresh=30.0,
-    seed_thresh=20.0,
+    edge_thresh=24.0,
+    seed_thresh=32.0,
     min_blob_pixels=1,
     fill_holes=True,
     return_debug=False,
@@ -564,7 +584,7 @@ def build_smoothed_seeded_blob_labels(
     1. Smooth the local ROI to suppress pixel-scale jaggedness/noise.
     2. Threshold the smoothed image at a lower 'edge/support' threshold.
     3. Keep only connected support components that contain at least one event seed.
-    4. Optionally fill holes to get a solid footprint.
+    4. Fill holes to get a solid footprint.
     5. Return a labeled image for downstream metrics on the ORIGINAL im_corr.
 
     Parameters
@@ -584,7 +604,7 @@ def build_smoothed_seeded_blob_labels(
     seed_thresh : float
         Higher threshold on the smoothed ROI used only for sanity checks.
         A component will be kept if it contains a seed; this threshold is
-        mainly diagnostic / optional protection against weak fuzzy junk.
+        mainly diagnostic protection against weak fuzzy junk.
     min_blob_pixels : int
         Minimum pixel count for a kept blob.
     fill_holes : bool
@@ -636,6 +656,7 @@ def build_smoothed_seeded_blob_labels(
             return label_img, {
                 "smoothed": smoothed,
                 "support_mask": support_mask,
+                "kept_mask": np.zeros_like(support_mask, dtype=bool),
                 "edge_mask": np.zeros_like(support_mask, dtype=bool),
                 "seed_mask": seed_mask,
             }
@@ -649,6 +670,7 @@ def build_smoothed_seeded_blob_labels(
             return label_img, {
                 "smoothed": smoothed,
                 "support_mask": support_mask,
+                "kept_mask": np.zeros_like(support_mask, dtype=bool),
                 "edge_mask": np.zeros_like(support_mask, dtype=bool),
                 "seed_mask": seed_mask,
             }
@@ -664,7 +686,7 @@ def build_smoothed_seeded_blob_labels(
 
         comp = (cc_img == cc_id)
 
-        # Optional protection against weak fuzzy patches:
+        # protection against weak fuzzy patches:
         # keep if the component contains either a seed pixel assignment
         # (already true by construction) and is big enough.
         if fill_holes:
@@ -684,7 +706,7 @@ def build_smoothed_seeded_blob_labels(
         final_mask |= comp
         next_label += 1
 
-    # Optional fallback: if smoothing was too aggressive and no support CC was
+    # fallback: if smoothing was too aggressive and no support CC was
     # retained, create a tiny label around each seed above edge_thresh in the
     # ORIGINAL ROI.
     if next_label == 1:
@@ -732,8 +754,8 @@ def analyze_blobs_by_frame(
     w,
     small_struct,   
     peak_assign_radius=2,
-    seed_thresh=20.0,
-    edge_thresh=30.0,
+    seed_thresh=32.0,
+    edge_thresh=24.0,
     event_neighborhood_radius=16,
     gaussian_sigma=1.0,
     min_blob_pixels=1,
@@ -1122,6 +1144,237 @@ def _timestamped_name(base_name, timestamp, on_hpc):
     return f"{name}_{timestamp}{ext}"
 
 
+def load_sim_data(sim_data_path):
+    """
+    Load a simulated 2D DN image containing only synthetic events.
+
+    Expected shape: (4096, 4096)
+    """
+    sim = np.load(sim_data_path)
+
+    if sim.ndim != 2:
+        raise ValueError(
+            f"Sim data must be 2D, got shape {sim.shape}"
+        )
+
+    if sim.shape != (4096, 4096):
+        raise ValueError(
+            f"Sim data must have shape (4096, 4096), got {sim.shape}"
+        )
+
+    return sim.astype(np.float32, copy=False)
+
+
+def extract_sim_data(sim_data, threshold=1e-6, min_pixels=1, structure=None, return_metadata=False):
+    """
+    Find connected simulated events in a noiseless sim image and return them
+    as cutouts with local masks.
+
+    Returns
+    -------
+    cutouts : list of dict
+        Each entry contains:
+            image   : float32 cutout with original DN values
+            mask    : bool cutout mask
+            bbox    : (y0, y1, x0, x1) in the sim frame
+            n_pix   : number of mask pixels
+            peak_dn : peak DN in cutout
+            sum_dn  : total DN in cutout
+    """
+    if structure is None:
+        structure = np.ones((3, 3), dtype=bool)
+
+    sim_pos = np.asarray(sim_data, dtype=np.float32)
+    event_mask = sim_pos > threshold
+
+    lab, nlab = label(event_mask, structure=structure)
+
+    metadata = {
+        "sim_shape": tuple(sim_data.shape),
+        "threshold": float(threshold),
+        "min_pixels": int(min_pixels),
+        "n_connected_components_raw": int(nlab),
+        "n_pixels_above_threshold": int(np.count_nonzero(event_mask)),
+    }
+
+    if nlab == 0:
+        metadata["n_cutouts_kept"] = 0
+        if return_metadata:
+            return [], metadata
+        return []
+
+    objs = find_objects(lab)
+    cutouts = []
+
+    for lab_id, slc in enumerate(objs, start=1):
+        if slc is None:
+            continue
+
+        sub_lab = lab[slc]
+        sub_mask = (sub_lab == lab_id)
+
+        n_pix = int(sub_mask.sum())
+        if n_pix < min_pixels:
+            continue
+
+        sub_img = sim_pos[slc].copy()
+        sub_img[~sub_mask] = 0.0
+
+        y0, y1 = slc[0].start, slc[0].stop
+        x0, x1 = slc[1].start, slc[1].stop
+
+        cutouts.append({
+            "image": sub_img.astype(np.float32, copy=False),
+            "mask": sub_mask,
+            "bbox": (y0, y1, x0, x1),
+            "n_pix": n_pix,
+            "peak_dn": float(sub_img[sub_mask].max()),
+            "sum_dn": float(sub_img[sub_mask].sum()),
+        })
+
+    metadata["n_cutouts_kept"] = int(len(cutouts))
+    metadata["n_cutouts_rejected_min_pixels"] = (
+        metadata["n_connected_components_raw"] - metadata["n_cutouts_kept"]
+    )
+
+    if return_metadata:
+        return cutouts, metadata
+    
+    return cutouts
+
+
+def choose_injection_location(frame_shape, cutout_shape, rng, border=0):
+    """
+    Choose a random valid upper-left insertion location for a cutout.
+    """
+    h, w = frame_shape
+    ch, cw = cutout_shape
+
+    if ch + 2 * border > h or cw + 2 * border > w:
+        raise ValueError(
+            f"Cutout shape {cutout_shape} does not fit into frame shape {frame_shape}"
+        )
+
+    y0 = rng.integers(border, h - ch - border + 1)
+    x0 = rng.integers(border, w - cw - border + 1)
+    return int(y0), int(x0)
+
+
+def inject_sim_data(
+    data_cube,
+    sim_cutouts,
+    n_injections=10,
+    rng=None,
+    frame_indices=None,
+    allow_reuse=False,
+    border=32,
+):
+    """
+    Add selected simulated event cutouts into random frames/locations.
+
+    Parameters
+    ----------
+    data_cube : (Nframe, h, w) ndarray
+        Real data cube to modify.
+    sim_cutouts : list of dict
+        Output of extract_sim_event_cutouts.
+    n_injections : int
+        Number of cutouts to inject in total.
+    rng : np.random.Generator or None
+    frame_indices : sequence[int] or None
+        Restrict injections to this subset of frames.
+    allow_reuse : bool
+        If True, the same simulated event can be used more than once.
+    border : int
+        Keep injections this far from the image edge.
+
+    Returns
+    -------
+    injected_cube : ndarray
+        Copy of input cube with simulated events added.
+    truth_df : pd.DataFrame
+        Ground-truth table for injected events.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    if len(sim_cutouts) == 0:
+        raise ValueError("No simulated cutouts found to inject.")
+
+    injected_cube = data_cube.astype(np.float32, copy=True)
+
+    nframe, h, w = injected_cube.shape
+
+    if frame_indices is None:
+        frame_indices = np.arange(nframe, dtype=int)
+    else:
+        frame_indices = np.asarray(frame_indices, dtype=int)
+
+    if len(frame_indices) == 0:
+        raise ValueError("frame_indices is empty.")
+
+    if allow_reuse:
+        chosen_cutout_ids = rng.integers(0, len(sim_cutouts), size=n_injections)
+    else:
+        if n_injections > len(sim_cutouts):
+            raise ValueError(
+                "n_injections exceeds number of available sim cutouts when allow_reuse=False."
+            )
+        chosen_cutout_ids = rng.choice(
+            len(sim_cutouts), size=n_injections, replace=False
+        )
+
+    truth_rows = []
+
+    for inj_id, cutout_id in enumerate(chosen_cutout_ids):
+        cut = sim_cutouts[int(cutout_id)]
+        cut_img = cut["image"]
+        ch, cw = cut_img.shape
+
+        frame = int(rng.choice(frame_indices))
+        y0, x0 = choose_injection_location((h, w), (ch, cw), rng=rng, border=border)
+        y1 = y0 + ch
+        x1 = x0 + cw
+
+        injected_cube[frame, y0:y1, x0:x1] += cut_img
+
+        mask = cut["mask"]
+        yy, xx = np.where(mask)
+        peak_local_idx = np.argmax(cut_img[mask])
+        peak_y_local = int(yy[peak_local_idx])
+        peak_x_local = int(xx[peak_local_idx])
+
+        src_y0, src_y1, src_x0, src_x1 = cut["bbox"]
+
+        truth_rows.append({
+            "injection_id": int(inj_id),
+            "source_cutout_id": int(cutout_id),
+
+            # injected position in real FITS frame
+            "frame": frame,
+            "y0": int(y0),
+            "y1": int(y1),
+            "x0": int(x0),
+            "x1": int(x1),
+            "peak_y": int(y0 + peak_y_local),
+            "peak_x": int(x0 + peak_x_local),
+
+            # original source position in sim_data frame
+            "source_y0": int(src_y0),
+            "source_y1": int(src_y1),
+            "source_x0": int(src_x0),
+            "source_x1": int(src_x1),
+
+
+            "n_pix_sim": int(cut["n_pix"]),
+            "peak_dn_sim": float(cut["peak_dn"]),
+            "sum_dn_sim": float(cut["sum_dn"]),
+        })
+
+    truth_df = pd.DataFrame(truth_rows)
+    return injected_cube, truth_df
+
+
 # MAIN FUNCTION BELOW
 def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     """
@@ -1157,14 +1410,27 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
 
         # post-processing of candidate events
         "peak_assign_radius": 2,
-        "seed_thresh": 30.0,
-        "event_neighborhood_radius": 16,
+        "seed_thresh": 32.0,
+        "event_neighborhood_radius": 22,
 
         #gaussian smooth and edge detec
         "gaussian_sigma": 0.7,
-        "edge_thresh": 30.0,
+        "edge_thresh": 24.0,
         "min_blob_pixels": 2,
         "fill_holes": True,
+
+        # optional simulated event injection
+        "add_sim_data": False,
+        "sim_data_path": None,
+        "sim_threshold": 1e-6,
+        "sim_min_pixels": 1,
+        "n_sim_injections": 10,
+        "sim_random_seed": 12345,
+        "sim_allow_reuse": False,
+        "sim_injection_border": 32,
+        "sim_frame_indices": None,
+        "save_sim_truth": True,
+        "sim_truth_csv": "cr_event_analysis_sim_truth.csv",
     }
 
     params = {**default_params, **params}
@@ -1194,6 +1460,18 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     output_xray_csv = params.get("output_xray_csv", "xray_event_analysis_results.csv")
     output_xray_parquet = params.get("output_xray_parquet", None)  
 
+    add_sim_data = params.get("add_sim_data", False)
+    sim_data_path = params.get("sim_data_path", None)
+    sim_threshold = params.get("sim_threshold", 1e-6)
+    sim_min_pixels = params.get("sim_min_pixels", 1)
+    n_sim_injections = params.get("n_sim_injections", 10)
+    sim_random_seed = params.get("sim_random_seed", 12345)
+    sim_allow_reuse = params.get("sim_allow_reuse", False)
+    sim_injection_border = params.get("sim_injection_border", 32)
+    sim_frame_indices = params.get("sim_frame_indices", None)
+    save_sim_truth = params.get("save_sim_truth", True)
+    sim_truth_csv = params.get("sim_truth_csv", "cr_event_analysis_sim_truth.csv")
+
     #check the time before starting
     start_time = time.perf_counter()
 
@@ -1202,24 +1480,67 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     data_cube  = load_data(fits_path)
     gain_array = np.loadtxt(gain_path)[:, 5].reshape((channel_size, channel_size))
 
+    print("Number of frames in data cube:", Nframe)
+    #Load in sim data, if needed
+    sim_truth_df = None
+
+    if add_sim_data:
+        if sim_data_path is None:
+            raise ValueError(
+                "params['add_sim_data'] is True, but params['sim_data_path'] is None."
+            )
+
+        print(f"Loading simulated event image from: {sim_data_path}")
+        sim_data = load_sim_data(sim_data_path)
+
+        rng = np.random.default_rng(sim_random_seed)
+
+        sim_cutouts, sim_metadata = extract_sim_data(
+            sim_data,
+            threshold=sim_threshold,
+            min_pixels=sim_min_pixels,
+            structure=np.ones((3, 3), dtype=bool),
+            return_metadata=True,
+        )
+
+        #print(f"Found {len(sim_cutouts)} simulated event cutouts to inject")
+        print(
+            f"Sim array contains {sim_metadata['n_connected_components_raw']} "
+            f"connected objects above threshold; "
+            f"{sim_metadata['n_cutouts_kept']} passed min_pixels."
+        )
+
+        if len(sim_cutouts) == 0:
+            raise ValueError("No simulated events found above threshold in sim_data.")
+
+        data_cube, sim_truth_df = inject_sim_data(
+            data_cube=data_cube,
+            sim_cutouts=sim_cutouts,
+            n_injections=n_sim_injections,
+            rng=rng,
+            frame_indices=sim_frame_indices,
+            allow_reuse=sim_allow_reuse,
+            border=sim_injection_border,
+        )
+
+        print(f"Injected {len(sim_truth_df)} simulated events into the FITS cube"
+              f" from {sim_metadata['n_cutouts_kept']} available such events")
+
+        sim_truth_df["n_sim_events_available"] = sim_metadata["n_cutouts_kept"]
+        sim_truth_df["n_sim_components_raw"] = sim_metadata["n_connected_components_raw"]
+        sim_truth_df["sim_threshold"] = sim_metadata["threshold"]
+        sim_truth_df["sim_min_pixels"] = sim_metadata["min_pixels"]
+
     #data dimensions
     Nframe, h, w = data_cube.shape
-
-
-    #new hull search params
-    blob_alpha = 1.5
-    blob_min_points_for_hull = 6
-    blob_max_assign_dist = 12.0
-
-    alpha = params.get("alpha", blob_alpha)
-    min_points_for_hull = params.get("min_points_for_hull", blob_min_points_for_hull)
-    max_assign_dist = params.get("max_assign_dist", blob_max_assign_dist)
-
 
     #check the time
     now = time.perf_counter()
     load_time = now - start_time
-    print(f"Time to load the data cube: {load_time}s")
+    if add_sim_data:
+        print(f"Time to load the data cube and inject simulated data: {load_time}s")
+    else:
+        print(f"Time to load the data cube: {load_time}s")
     
     #enter number of available cores
     if on_HPC:
@@ -1316,7 +1637,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     now = time.perf_counter()
 
     # Peak finding via median and MAD
-    peak_threshold_estimate = sigma_thresh * (6) * 1.4826
+    peak_threshold_estimate = sigma_thresh * (6) * 1.4826 #should I adjust the multiplier ?
     print(f"Calculating median of each frame to identify outliers." \
     " \n These outlier peaks will be our event candidates" \
         f"\n Using a threshold sigma of {sigma_thresh} * MAD * 1.4826 ~ {peak_threshold_estimate} DN")
@@ -1466,6 +1787,12 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     pre_df.to_csv(pre_df_name, index=False)
     print(f"Pre-classification dataframe saved as {pre_df_name}, medians numpy array saved as {medians_name}")
 
+
+    if add_sim_data and (sim_truth_df is not None) and save_sim_truth:
+        sim_truth_csv_final = _timestamped_name(sim_truth_csv, timestamp, on_HPC)
+        sim_truth_df.to_csv(sim_truth_csv_final, index=False)
+        print(f"Saved simulated-event truth table to: {sim_truth_csv_final}")
+
     # Early sanity check:
     # if likely_streak is too small, stop early
     # n_total = len(pre_df)
@@ -1511,6 +1838,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
 
     print(f"Post-classification survivors: {len(survivor_idx)} / {len(single_epoch_events)} raw-peak candidates")
 
+
     if len(survivor_idx) == 0:
         print("No post-classification survivors found.")
         df_streaks = pd.DataFrame(columns=[
@@ -1537,9 +1865,12 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     }
 
 
+    frame_items = list(idxs_by_frame_survivor.items())
+    print("Frames with survivors:", len(frame_items))
+
+
     # blob analysis only on survivors
     print("Analyzing survivor blobs...")
-    frame_items = list(idxs_by_frame_survivor.items())
 
     blob_results = thread_map(
         lambda item: analyze_blobs_by_frame(
