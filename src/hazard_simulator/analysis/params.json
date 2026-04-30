@@ -10,8 +10,20 @@
 
   "gaussian_sigma": 0.7,
   "edge_thresh": 30.0,
-  
+
   "save_dataframe": true,
   "output_csv": "cr_event_analysis_results.csv",
-  "output_parquet": null
+  "output_parquet": null,
+  
+  "add_sim_data": false,
+  "sim_data_path": "../Data/Sim/output_DN_array_29Apr2026.npy",
+  "sim_threshold": 0.001,
+  "sim_min_pixels": 3,
+  "n_sim_injections": 55,
+  "sim_random_seed": 42,
+  "sim_allow_reuse": false,
+  "sim_injection_border": 32,
+  "sim_frame_indices": [10, 20, 30, 40, 50],
+  "save_sim_truth": true,
+  "sim_truth_csv": "cr_event_analysis_sim_truth.csv"
 }
