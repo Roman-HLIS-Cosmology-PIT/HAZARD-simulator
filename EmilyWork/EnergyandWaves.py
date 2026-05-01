@@ -4,7 +4,7 @@ import asdf
 import numpy as np
 
 # import matplotlib.pyplot as plt
-from .ThomasFermi import Potential
+from hazard_simulator.atomic_excitation.thomas_fermi import Potential
 
 r_bohr_H = 5.2946541e-11  # bohr radius in meters # noqa: N816
 r_bohr_Mg = r_bohr_H / 80  # noqa: N816
