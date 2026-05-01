@@ -12,8 +12,9 @@ Nr = int(sys.argv[4])
 #find_h = sys.argv[6]
 #find_wfs = sys.argv[7]
 h_try = float(sys.argv[5])
+print(path_out+".asdf")
 
-Nr = 5000 # gives delta r < pi /(2p_max + k_max ) #basically deta r = 6e-13 
+#Nr = 5000 # gives delta r < pi /(2p_max + k_max ) #basically deta r = 6e-13 
 # if p_max = 9.9532518e+12 kgm/s 
 
 n_max = 1200
@@ -30,12 +31,12 @@ final_gs = []
 n = 1 
 while h_try < h_max and n<n_max: 
 
-    print(n)
+    #print(n)
     info1 = EnergyandWaves.iterate_for_zeros(n,k,Z, Nr,tested_hs,tested_s,n_zeros)
     #print('here')
     #print(info1['h'])
     final_h.append(info1['h'])
-    print(info1['h'])
+    #print(info1['h'])
     r,f,g = EnergyandWaves.wavefunc_renorm(Z,n,k,True,info1['h'],Nr)
     #print(info2['f'])
     final_fs.append(np.array(f))
