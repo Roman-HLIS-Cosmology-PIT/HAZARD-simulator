@@ -1,10 +1,24 @@
-import sys
-
 import numpy as np
 
 
 def SetupTF(log10rmin, log10rmax, N):
-    """Setup up self-similar solution for Thomas-Fermi"""
+    """
+    Setup up self-similar solution for Thomas-Fermi.
+
+    Parameters
+    ----------
+    log10rmin, log10rmax : float
+        Range of radii (log10, in units of the Thomas-Fermi scale length).
+    N : int
+        Number of points to sample.
+
+    Returns
+    -------
+    r, phi, phiprime: np.ndarray of float
+        The radius, scaled potential, and scaled potential derivatives.
+
+    """
+
     r = np.logspace(log10rmin, log10rmax, N)
     r_int = np.sqrt(r[1:] * r[:-1])
     phi = np.zeros_like(r)
@@ -32,17 +46,26 @@ TFGrid_r, TFGrid_phi, _ = SetupTF(-9, 6, 7501)
 
 
 def Potential(Z, r):
-    """Function to get the potential (in V) at radius r (in m) for atomic number Z"""
+    """
+    Function to get the potential in an atom using the Thomas-Fermi model.
+
+    Parameters
+    ----------
+    Z : int
+        Atomic number.
+    r : float
+        Radius in meters.
+
+    Returns
+    -------
+    float
+        The potential in Volts.
+
+    """
+
     return (
         1.4399645432764397e-09
         * Z
         / r
         * np.interp(r / 4.685024802601039e-11 * Z ** (1 / 3), TFGrid_r, TFGrid_phi)
     )
-
-
-if __name__ == "__main__":
-    Z = int(sys.argv[1])
-    # print(Z)
-    for r in np.logspace(-13, -7, 121).tolist():
-        print(f"{r:13.7E} {Potential(Z,r):13.7E}")
