@@ -1372,6 +1372,7 @@ def inject_sim_data(
         })
 
     truth_df = pd.DataFrame(truth_rows)
+    print(f"Simulated objects inject into frames:{sorted(truth_df['frame'].unique())}")
     return injected_cube, truth_df
 
 
@@ -1480,6 +1481,8 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     data_cube  = load_data(fits_path)
     gain_array = np.loadtxt(gain_path)[:, 5].reshape((channel_size, channel_size))
 
+    #data dimensions
+    Nframe, h, w = data_cube.shape
     print("Number of frames in data cube:", Nframe)
     #Load in sim data, if needed
     sim_truth_df = None
@@ -1530,9 +1533,6 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         sim_truth_df["n_sim_components_raw"] = sim_metadata["n_connected_components_raw"]
         sim_truth_df["sim_threshold"] = sim_metadata["threshold"]
         sim_truth_df["sim_min_pixels"] = sim_metadata["min_pixels"]
-
-    #data dimensions
-    Nframe, h, w = data_cube.shape
 
     #check the time
     now = time.perf_counter()
@@ -1800,11 +1800,10 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
 
     print(f"likely_streak found = {n_streaks}")
 
-    if n_streaks < 10: # change this to be algorithmic later, perhaps based on percent
-        print(
-            f"Early exit: number of likely streaks is too low")
-
-        return 0
+    if n_streaks < 5: # change this to be algorithmic later, perhaps based on percent
+        raise RuntimeError(
+            f"Early exit: only {n_streaks} likely streaks found."
+        )
 
 
     pre_time = time.perf_counter() - now
@@ -2034,9 +2033,6 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     output_csv_final = _timestamped_name(output_csv, timestamp, on_HPC)
     output_xray_csv_final = _timestamped_name(output_xray_csv, timestamp, on_HPC)
 
-    print(f"Streak/survivor output filename: {output_csv_final}")
-    print(f"X-ray output filename: {output_xray_csv_final}")
-
     if save_dataframe:
         if len(df_streaks):
             df_streaks.to_csv(output_csv_final, index=False)
@@ -2061,7 +2057,10 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     total_time = time.perf_counter() - start_time
     print(f"Total runtime: {total_time:.2f}s")
 
-    return df_streaks, df_xrays
+    if add_sim_data:
+        return data_cube, events, single_epoch_events, sim_data, sim_metadata, rng, sim_cutouts, sim_truth_df, pre_df, frame_medians, df_xrays, df_streaks
+    else:
+        return data_cube, events, single_epoch_events, pre_df, frame_medians, df_xrays, df_streaks
 
 
 #---------end main function------
