@@ -14,7 +14,7 @@ for $j (0..$j_max){
             print "fork $i: "; system "date";
             my $pid = fork();
             if (not $pid) {
-                    system("python -m EmilyWork.WFGenerator 80 $i Hg_k_$i_nmax_1200_Nr_500  500 1e-15");
+                    system("python -m EmilyWork.WFGenerator 80 $i Hg_k_$i\_nmax_1200_Nr_500  500 1e-15");
                     exit();
             }
     }

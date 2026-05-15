@@ -13,8 +13,9 @@ Nr = int(sys.argv[4])
 # find_h = sys.argv[6]
 # find_wfs = sys.argv[7]
 h_try = float(sys.argv[5])
+print(path_out + ".asdf")
 
-Nr = 5000  # gives delta r < pi /(2p_max + k_max ) #basically deta r = 6e-13
+# Nr = 5000 # gives delta r < pi /(2p_max + k_max ) #basically deta r = 6e-13
 # if p_max = 9.9532518e+12 kgm/s
 
 n_max = 1200
