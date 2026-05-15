@@ -10,10 +10,10 @@ import os
 import time
 import json
 import argparse
-import numpy as np # pyright: ignore[reportMissingImports]
-import pandas as pd # pyright: ignore[reportMissingModuleSource]
-from tqdm import tqdm # pyright: ignore[reportMissingModuleSource]
-from scipy.ndimage import ( # pyright: ignore[reportMissingImports]
+import numpy as np 
+import pandas as pd 
+from tqdm import tqdm 
+from scipy.ndimage import (
     binary_dilation,
     binary_erosion,
     binary_fill_holes,
@@ -22,12 +22,12 @@ from scipy.ndimage import ( # pyright: ignore[reportMissingImports]
     label,
     find_objects
 )
-from tqdm.contrib.concurrent import thread_map # pyright: ignore[reportMissingModuleSource]
+from tqdm.contrib.concurrent import thread_map
 from concurrent.futures import ThreadPoolExecutor
-from astropy.stats import sigma_clipped_stats # pyright: ignore[reportMissingImports]
+from astropy.stats import sigma_clipped_stats 
 from collections import Counter
 from functools import partial
-from astropy.io import fits # pyright: ignore[reportMissingImports]
+from astropy.io import fits 
 
 
 def load_data(fits_path):   
