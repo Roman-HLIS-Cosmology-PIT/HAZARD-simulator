@@ -12,7 +12,7 @@ import json
 import argparse
 import numpy as np # pyright: ignore[reportMissingImports]
 import pandas as pd # pyright: ignore[reportMissingModuleSource]
-from tqdm import tqdm
+from tqdm import tqdm # pyright: ignore[reportMissingModuleSource]
 from scipy.ndimage import ( # pyright: ignore[reportMissingImports]
     binary_dilation,
     binary_erosion,
@@ -22,7 +22,7 @@ from scipy.ndimage import ( # pyright: ignore[reportMissingImports]
     label,
     find_objects
 )
-from tqdm.contrib.concurrent import thread_map
+from tqdm.contrib.concurrent import thread_map # pyright: ignore[reportMissingModuleSource]
 from concurrent.futures import ThreadPoolExecutor
 from astropy.stats import sigma_clipped_stats # pyright: ignore[reportMissingImports]
 from collections import Counter
@@ -172,7 +172,23 @@ def find_peaks_for_frame(data_cube, index, badpix_mask, sigma_thresh,
     )
 
     ys, xs = np.where(cand)
-    peaks  = [(index, int(y), int(x)) for y, x in zip(ys, xs)]
+
+    #new code to deal with peaks near badpix
+    badpix_veto_radius = 3  
+    peaks  = []
+    ny, nx = image.shape
+
+    for y, x in zip(ys, xs):
+        ylo = max(0, y - badpix_veto_radius)
+        yhi = min(ny, y + badpix_veto_radius + 1)
+        xlo = max(0, x - badpix_veto_radius)
+        xhi = min(nx, x + badpix_veto_radius + 1)
+
+        if np.any(badpix_mask[ylo:yhi, xlo:xhi]):
+            continue
+
+        peaks.append((index, int(y), int(x)))
+    
     return peaks, median, threshold
 
 def summed_area_table(image):
@@ -1821,25 +1837,25 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         ]
         df_xrays = df_xrays[xray_cols]
 
-    # survivor selection
+    # streak selection
 
     if keep_ambiguous_events:
         keep_classes = {"likely_streak", "ambiguous"}
     else:
         keep_classes = {"likely_streak"}
 
-    survivor_idx = pre_df.loc[
+    streak_candidate_idx = pre_df.loc[
         pre_df["class"].isin(keep_classes),
         "event_index"
     ].to_numpy(dtype=int)
 
-    survivor_idx = np.unique(survivor_idx)
+    streak_candidate_idx = np.unique(streak_candidate_idx)
 
-    print(f"Post-classification survivors: {len(survivor_idx)} / {len(single_epoch_events)} raw-peak candidates")
+    print(f"Post-classification streak candidates: {len(streak_candidate_idx)} / {len(single_epoch_events)} raw-peak candidates")
 
 
-    if len(survivor_idx) == 0:
-        print("No post-classification survivors found.")
+    if len(streak_candidate_idx) == 0:
+        print("No post-classification streak candidates found.")
         df_streaks = pd.DataFrame(columns=[
             "frame", "y", "x", "event_index", "class",
             "median", "sum3x3_DN", "sum3x3_e", "sum5x5_DN", "sum5x5_e",
@@ -1853,23 +1869,23 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         ])
         return df_streaks, pre_df
 
-    idxs_by_frame_survivor = {}
-    for idx in survivor_idx:
+    idxs_by_frame_streak_candidate = {}
+    for idx in streak_candidate_idx:
         f = int(single_epoch_events[idx, 0])
-        idxs_by_frame_survivor.setdefault(f, []).append(idx)
+        idxs_by_frame_streak_candidate.setdefault(f, []).append(idx)
 
-    idxs_by_frame_survivor = {
+    idxs_by_frame_streak_candidate = {
         f: np.asarray(v, dtype=int)
-        for f, v in idxs_by_frame_survivor.items()
+        for f, v in idxs_by_frame_streak_candidate.items()
     }
 
 
-    frame_items = list(idxs_by_frame_survivor.items())
-    print("Frames with survivors:", len(frame_items))
+    frame_items = list(idxs_by_frame_streak_candidate.items())
+    print("Frames with streak candidates:", len(frame_items))
 
 
-    # blob analysis only on survivors
-    print("Analyzing survivor blobs...")
+    # blob analysis only on streak candidates
+    print("Analyzing streak candidates blobs...")
 
     blob_results = thread_map(
         lambda item: analyze_blobs_by_frame(
@@ -1925,17 +1941,17 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
 
     blob_time = time.perf_counter() - now
     total_time = time.perf_counter() - start_time
-    print(f"Time to analyze survivor blobs: {blob_time:.2f}s; total time elapsed: {total_time:.2f}s")
+    print(f"Time to analyze streak candidates blobs: {blob_time:.2f}s; total time elapsed: {total_time:.2f}s")
     now = time.perf_counter()
 
     # Build final dataframe
-    print("Building survivor dataframe...")
+    print("Building streak candidates dataframe...")
 
     final_rows = []
 
     pre_lookup = pre_df.set_index("event_index")
 
-    for idx in survivor_idx:
+    for idx in streak_candidate_idx:
         frame, y, x = single_epoch_events[idx].astype(int)
         blob_label = int(hit_blob_label[idx])
 
@@ -2036,9 +2052,9 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     if save_dataframe:
         if len(df_streaks):
             df_streaks.to_csv(output_csv_final, index=False)
-            print(f"Saved streak/survivor dataframe to: {output_csv_final}")
+            print(f"Saved streak candidates dataframe to: {output_csv_final}")
         else:
-            print("No survivor rows to save for streak dataframe.")
+            print("No streak candidate rows to save for streak dataframe.")
 
         if len(df_xrays):
             df_xrays.to_csv(output_xray_csv_final, index=False)
