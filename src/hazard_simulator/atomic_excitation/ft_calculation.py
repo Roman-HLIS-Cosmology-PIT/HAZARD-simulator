@@ -8,6 +8,6 @@ def ft_calculation(chi_t, chi_l, c, beta, t, q):
     lower_bound = (t/(c*beta))
     upper_bound = np.inf
     def integrand(q):
-        return ((chi_l.imag)/ (abs(1 + chi_l.real)**2)) + ((chi_t.imag)/(abs(1+ chi_t.real - ((c*q)/t)**2))**2)*((((c**2)*(beta**2)*(q**2))/t)-1)
+        return (((chi_l.imag)/ (abs(1 + chi_l)**2)) + ((chi_t.imag)/((abs(1+ chi_t - ((c*q)/t)**2))**2)*((((c**2)*(beta**2)*(q**2))/(t**2))-1)))*(1/q)
     result, error = sp.integrate.quad(integrand, lower_bound, upper_bound)
-    return np.real(result)
+    return result
