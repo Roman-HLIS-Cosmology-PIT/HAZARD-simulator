@@ -200,7 +200,7 @@ def save_class_origin_scatter(
     title: str | None = None,
     xscale: str = "linear",
     yscale: str = "linear",
-    max_real_per_class: int | None = 10000,
+    max_real_per_class: int | None = 60000,
     random_seed: int = 12345,
     dpi: int = 180,
 ) -> Path | None:
@@ -380,7 +380,7 @@ def generate_diagnostic_plots(
     *,
     output_root: str | Path = "cr_event_analysis_plots",
     timestamp: str | None = None,
-    max_real_per_class: int | None = 10000,
+    max_real_per_class: int | None = 60000,
     random_seed: int = 12345,
     dpi: int = 180,
 ) -> Path:
