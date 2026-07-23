@@ -23,7 +23,11 @@ CLASS_COLORS = {
     "likely_xray": "tab:blue",
     "likely_streak": "tab:red",
 }
-
+COLUMN_LABELS = {
+    "sum5x5_bgsub_DN": ("Background-subtracted 5×5 signal (DN)"),
+    "minor_axis_extent_phase": ("Minor-axis extent + (y mod 128)/128"),
+    "major_axis_extent_phase": ("Major-axis extent + (x mod 128)/128"),
+}
 
 def _slug(text: str) -> str:
     text = re.sub(r"[^A-Za-z0-9._-]+", "_", str(text).strip())
@@ -51,11 +55,43 @@ def _prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     if "annular_excess" not in out and {"r3", "r5"}.issubset(out.columns):
         out["annular_excess"] = out["r5"] - out["r3"]
 
+    # Break extent quantization using sub-supercell detector position.
     if (
-        "annular_excess" not in out
-        and {"r3", "r5"}.issubset(out.columns)
+        "minor_axis_extent_phase" not in out.columns
+        and {"minor_axis_extent", "y"}.issubset(out.columns)
     ):
-        out["annular_excess"] = out["r5"] - out["r3"]
+        minor_extent = pd.to_numeric(
+            out["minor_axis_extent"],
+            errors="coerce",
+        )
+        y_position = pd.to_numeric(
+            out["y"],
+            errors="coerce",
+        )
+
+        out["minor_axis_extent_phase"] = (
+            minor_extent
+            + (y_position % 128) / 128.0
+        )
+
+
+    if (
+        "major_axis_extent_phase" not in out.columns
+        and {"major_axis_extent", "x"}.issubset(out.columns)
+    ):
+        major_extent = pd.to_numeric(
+            out["major_axis_extent"],
+            errors="coerce",
+        )
+        x_position = pd.to_numeric(
+            out["x"],
+            errors="coerce",
+        )
+
+        out["major_axis_extent_phase"] = (
+            major_extent
+            + (x_position % 128) / 128.0
+        )
 
     return out
 
@@ -213,9 +249,9 @@ def save_class_origin_scatter(
 
     ax.set_xscale(xscale)
     ax.set_yscale(yscale)
-    ax.set_xlabel(x)
-    ax.set_ylabel(y)
-    ax.set_title(title or f"{y} versus {x}")
+    ax.set_xlabel(COLUMN_LABELS.get(x, x))
+    ax.set_ylabel(COLUMN_LABELS.get(y, y))
+    ax.set_title(title or f"{COLUMN_LABELS.get(y, y)} versus {COLUMN_LABELS.get(x, x)}")
     ax.grid(True, alpha=0.22)
     _add_scatter_legends(ax, classes)
 
@@ -370,6 +406,10 @@ def generate_diagnostic_plots(
         ("peak_val", "aspect_ratio", "log", "linear"),
         ("r3", "r5", "linear", "linear"),
         ("linearity", "anisotropy", "linear", "linear"),
+    # Quantization-expanded extent plots
+        ("minor_axis_extent_phase", "sum5x5_bgsub_DN", "log", "linear"),
+        ("major_axis_extent_phase", "sum5x5_bgsub_DN", "log", "linear"),
+
     ]
     pre_hist_specs = [
         ("peak_val", "log"),
