@@ -114,6 +114,39 @@ def test_find_peaks_for_frame_still_rejects_nearby_bad_pixel_when_disabled():
     assert (0, 10, 11) not in pset
 
 
+def test_find_peaks_for_frame_keeps_peak_outside_badpix_veto_radius():
+    """
+    A peak more than badpix_veto_radius pixels away from the bad pixel
+    should remain eligible for detection.
+    """
+    data_cube = make_test_cube(seed=6)
+    badpix_mask = np.zeros((21, 21), dtype=bool)
+
+    badpix_mask[10, 10] = True
+
+    # The current veto radius is 3 pixels.
+    # This peak is four columns away and should survive.
+    add_peak(
+        data_cube,
+        frame=0,
+        y=10,
+        x=14,
+        amp=60.0,
+    )
+
+    peaks, _, _ = find_peaks_for_frame(
+        data_cube=data_cube,
+        index=0,
+        badpix_mask=badpix_mask,
+        sigma_thresh=5.0,
+        exclude_badpix_neighbors=False,
+    )
+
+    pset = peak_set(peaks)
+
+    assert (0, 10, 14) in pset
+    
+
 def test_find_peaks_for_frame_finds_multiple_well_separated_peaks():
     data_cube = make_test_cube(seed=5)
     badpix_mask = np.zeros((21, 21), dtype=bool)
