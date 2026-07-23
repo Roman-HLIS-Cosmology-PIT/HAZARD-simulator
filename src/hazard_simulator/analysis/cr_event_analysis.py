@@ -10,9 +10,10 @@ import os
 import time
 import json
 import argparse
+
 import numpy as np 
-import pandas as pd 
-from tqdm import tqdm 
+import pandas as pd
+from tqdm import tqdm
 from scipy.ndimage import (
     binary_dilation,
     binary_erosion,
@@ -22,7 +23,7 @@ from scipy.ndimage import (
     label,
     find_objects
 )
-from tqdm.contrib.concurrent import thread_map
+from tqdm.contrib.concurrent import thread_map 
 from concurrent.futures import ThreadPoolExecutor
 from astropy.stats import sigma_clipped_stats 
 from collections import Counter
@@ -30,39 +31,80 @@ from functools import partial
 from astropy.io import fits 
 
 
-def load_data(fits_path):   
+def load_data(fits_path):
+    """
+    Loads FITS files
+
+    Parameters
+    ----------
+    fits_path: str
+        File path string
+
+    Returns
+    -------
+    data: np.array
+        Typically, a datacube of 100 frames of x-ray data
+    """
     with fits.open(fits_path) as hdulist:
         # hdulist is a list of HDU (Header/Data Unit) objects
         primary_hdu = hdulist[0]
-        data = primary_hdu.data      # NumPy array of your image/spectrum/whatever
+        data = primary_hdu.data      # NumPy array of the data
         header = primary_hdu.header  # FITS header metadata
 
     print(f"Data shape: {data.shape}")
     print("Header keys:", list(header.keys())[:10])
     return(data)
 
-def compute_mask_med_frame(data, sigma_mult):
+def compute_hot_pixel_mask(data, sigma_cutoff):
+    """
+    Finds outlier pixels by comparing against the median of all frames
+
+    Parameters
+    ----------
+    data: np.array
+        Datacube of differences images
+    sigma_cutoff: float
+        Desired multiple of the variance to use as a hot pixel cutoff
+
+    Returns
+    -------
+    hot_pix_mask: np.array
+        Array of ones and zeroes
+    """
     print("Looking for hot pixels…")
     median_img = np.median(data, axis=0)
     mad        = np.median(np.abs(median_img - np.median(median_img)))
     sigma_est  = 1.4826 * mad
-    thresh_med = np.median(median_img) + sigma_mult * sigma_est
-    mask_med   = median_img > thresh_med
+    thresh_med = np.median(median_img) + sigma_cutoff * sigma_est
+    hot_pix_mask   = median_img > thresh_med
     print(f"Done searching for hot pixels (σ={sigma_est:.3f}, thresh={thresh_med:.1f})")
-    return mask_med
+    return hot_pix_mask
 
-def compute_mask_first_frame(data, sigma_mult):
+def compute_veryhot_pixel_mask(data, sigma_cutoff):
+    """
+    Finds outlier pixels by comparing against the median of the first frame
+
+    Parameters
+    ----------
+    data: np.array
+        Datacube of differences images
+
+    Returns
+    -------
+    data: np.array
+        Typically, a datacube of 100 frames of x-ray data
+    """
     print("Looking for very hot pixels…")
     first_img  = data[0]
     med_first  = np.median(first_img)
     mad_first  = np.median(np.abs(first_img - med_first))
     sigma_est  = 1.4826 * mad_first
-    thresh0    = med_first + sigma_mult * sigma_est
+    thresh0    = med_first + sigma_cutoff * sigma_est
     mask0      = first_img > thresh0
     print(f"Done searching for very hot pixels (σ={sigma_est:.3f}, thresh={thresh0:.1f})")
     return mask0
 
-def compute_mask_no_response(data, sat_cut):
+def compute_unresponsive_mask(data, sat_cut):
     print("Looking for non-responsive pixels…")
     # If you wanted a row-wise tqdm you could replace the next line with a loop + tqdm
     frame_diff = np.abs(np.diff(data, axis=0))       # (Nframe-1, 4096,4096)
@@ -95,9 +137,7 @@ def filter_transient_events(events, transient_verification="full_exposure"):
 
     events = np.asarray(events)
 
-    # ------------------------------------------------------------
     # METHOD 1: full exposure (global Counter method)
-    # ------------------------------------------------------------
     if transient_verification == "full_exposure":
 
         coord_counts = Counter(map(tuple, events[:, 1:]))
@@ -109,9 +149,7 @@ def filter_transient_events(events, transient_verification="full_exposure"):
 
         return events[keep]
 
-    # ------------------------------------------------------------
     # METHOD 2: strict previous-frame-only check
-    # ------------------------------------------------------------
     elif transient_verification == "previous_frame":
         # Build lookup: frame -> set of (y,x)
         frame_to_coords = {}
@@ -136,9 +174,7 @@ def filter_transient_events(events, transient_verification="full_exposure"):
 
         return events[keep_mask]
 
-    # ------------------------------------------------------------
     # INVALID OPTION
-    # ------------------------------------------------------------
     else:
         raise ValueError(
             f"Invalid transient_verification='{transient_verification}'. "
@@ -268,22 +304,21 @@ def preclassify_events(
     Uses:
       - 3x3 neighbor-only support ratio
       - 5x5 neighbor-only support ratio
-      - secondary local-peak count in 5x5
-
+      - secondary local-peak count in 11x11 (not final)
     Important:
       The integral image (summed-area table) is built ONCE per frame,
       not once per event.
     """
-    im_corr = data_cube[f].astype(np.float32, copy=True)
-    im_corr -= np.float32(medians[f])
+    image_raw = data_cube[f].astype(np.float32, copy=True)
+    image_bg_subtract = image_raw - np.float32(medians[f])
 
-    sat = summed_area_table(im_corr)
+    sat = summed_area_table(image_bg_subtract)
 
     rows = []
     for idx in idxs:
         _, y, x = events[idx].astype(int)
 
-        p = float(im_corr[y, x])
+        p = float(image_bg_subtract[y, x])
 
         if p <= 0:
             rows.append({
@@ -300,18 +335,18 @@ def preclassify_events(
             continue
 
         # 3x3
-        y0, y1, x0, x1 = extract_box_bounds(y, x, im_corr.shape, half_size=1)
+        y0, y1, x0, x1 = extract_box_bounds(y, x, image_bg_subtract.shape, half_size=1)
         s3 = box_sum_from_sat(sat, y0, y1, x0, x1)
 
         # 5x5
-        y0, y1, x0, x1 = extract_box_bounds(y, x, im_corr.shape, half_size=2)
+        y0, y1, x0, x1 = extract_box_bounds(y, x, image_bg_subtract.shape, half_size=2)
         s5 = box_sum_from_sat(sat, y0, y1, x0, x1)
         # calculate the relative differences
         r3 = (s3 - p) / p
         r5 = (s5 - p) / p
 
         nsec = count_secondary_local_peaks(
-            im_corr,
+            image_bg_subtract,
             y,
             x,
             half_size=2,
@@ -321,9 +356,9 @@ def preclassify_events(
         )
 
         # 11x11
-        y0, y1, x0, x1 = extract_box_bounds(y, x, im_corr.shape, half_size=5)
-
-        roi = im_corr[y0:y1, x0:x1]
+        y0, y1, x0, x1 = extract_box_bounds(y, x, image_bg_subtract.shape, half_size=5)
+        s3 = box_sum_from_sat(sat, y0, y1, x0, x1)
+        roi = image_bg_subtract[y0:y1, x0:x1]
 
         roi_pos = np.clip(roi, 0.0, None)
         sum_pos = float(roi_pos.sum())
@@ -358,9 +393,9 @@ def preclassify_events(
 
         coords = np.argwhere(mask)
 
-        major_extent_pre = 0.0
-        minor_extent_pre = 0.0
-        aspect_ratio_pre = 1.0
+        major_axis_extent = 0.0
+        minor_axis_extent = 0.0
+        aspect_ratio = 1.0
 
         if len(coords) >= 2:
             vals = roi[mask]
@@ -368,15 +403,14 @@ def preclassify_events(
 
             pca_metrics = blob_pca_metrics(coords, weights=vals_pos)
 
-            major_extent_pre = pca_metrics["major_extent_pix"]
-            minor_extent_pre = pca_metrics["minor_extent_pix"]
-            aspect_ratio_pre = pca_metrics["aspect_ratio"]
+            major_axis_extent = pca_metrics["major_extent_pix"]
+            minor_axis_extent = pca_metrics["minor_extent_pix"]
+            aspect_ratio = pca_metrics["aspect_ratio"]
 
         bbox_h = 0
         bbox_w = 0
 
         bbox_area = 0
-        elongation_bbox = 1.0
         fill_frac = 1.0
 
         long_axis_bbox = 0
@@ -384,6 +418,30 @@ def preclassify_events(
         bbox_aspect_ratio = 1.0
 
         n_mask = len(coords)
+
+
+        if n_mask > 0:
+            y_min, x_min = coords.min(axis=0)
+            y_max, x_max = coords.max(axis=0)
+
+            bbox_h = int(y_max - y_min + 1)
+            bbox_w = int(x_max - x_min + 1)
+
+            bbox_area = int(bbox_h * bbox_w)
+
+            long_axis_bbox = int(max(bbox_h, bbox_w))
+            short_axis_bbox = int(min(bbox_h, bbox_w))
+
+            bbox_aspect_ratio = (
+                long_axis_bbox / max(short_axis_bbox, 1)
+            )
+
+
+            fill_frac = (
+                n_mask / bbox_area
+                if bbox_area > 0
+                else 0.0
+            )
 
         if n_mask >= 2:
             vals = roi[mask]
@@ -409,18 +467,10 @@ def preclassify_events(
             linearity = 1.0
             anisotropy = 0.0
 
-
-        # -----------------------------
         # bbox / mask morphology categories
-        # -----------------------------
         is_tiny_bbox = (
             (n_mask <= 1)
             or (bbox_area <= 1)
-        )
-
-        bbox_supports_streak = (
-            (long_axis_bbox >= 4)
-            and (bbox_aspect_ratio >= 1.5)
         )
 
         is_morph_noise = (
@@ -444,11 +494,11 @@ def preclassify_events(
 
         is_streak_like = (
             (
-                (aspect_ratio_pre >= 1.4)     # Primary discriminator
+                (aspect_ratio >= 1.4)     # Primary discriminator
                 or
                 (long_axis_bbox >= 5)         # fallback for very large events
             )
-            and (major_extent_pre >= 3.5)     # must be spatially extended
+            and (major_axis_extent >= 3.5)     # must be spatially extended
             and (n_support >= 3)
         ) and not is_low_signal
 
@@ -478,14 +528,13 @@ def preclassify_events(
             "bbox_w_5x5": int(bbox_w),
             "n_mask_5x5": int(n_mask),
             "bbox_area_5x5": int(bbox_area),
-            "elongation_bbox_5x5": float(elongation_bbox),
             "long_axis_bbox_5x5": int(long_axis_bbox),
             "short_axis_bbox_5x5": int(short_axis_bbox),
             "bbox_aspect_ratio_5x5": float(bbox_aspect_ratio),
             "fill_frac_5x5": float(fill_frac),
-            "major_extent_pre": float(major_extent_pre),
-            "minor_extent_pre": float(minor_extent_pre),
-            "aspect_ratio_pre": float(aspect_ratio_pre),
+            "major_axis_extent": float(major_axis_extent),
+            "minor_axis_extent": float(minor_axis_extent),
+            "aspect_ratio": float(aspect_ratio),
         })
 
     return rows
@@ -580,7 +629,7 @@ def edge_pixels_from_mask(mask, structure=None):
 
 
 def build_smoothed_seeded_blob_labels(
-    im_corr,
+    image_bg_subtract,
     coords,
     neighborhood_mask=None,
     structure=None,
@@ -601,11 +650,11 @@ def build_smoothed_seeded_blob_labels(
     2. Threshold the smoothed image at a lower 'edge/support' threshold.
     3. Keep only connected support components that contain at least one event seed.
     4. Fill holes to get a solid footprint.
-    5. Return a labeled image for downstream metrics on the ORIGINAL im_corr.
+    5. Return a labeled image for downstream metrics on the ORIGINAL image_bg_subtract.
 
     Parameters
     ----------
-    im_corr : 2D ndarray
+    image_bg_subtract : 2D ndarray
         Background-subtracted ROI image.
     coords : (N, 2) ndarray
         Peak/event coordinates in ROI-local (y, x) coordinates.
@@ -638,13 +687,13 @@ def build_smoothed_seeded_blob_labels(
     if structure is None:
         structure = np.ones((3, 3), dtype=bool)
 
-    h, w = im_corr.shape
+    h, w = image_bg_subtract.shape
     label_img = np.zeros((h, w), dtype=np.int32)
 
     if len(coords) == 0:
         if return_debug:
             return label_img, {
-                "smoothed": np.zeros_like(im_corr, dtype=np.float32),
+                "smoothed": np.zeros_like(image_bg_subtract, dtype=np.float32),
                 "support_mask": np.zeros_like(label_img, dtype=bool),
                 "edge_mask": np.zeros_like(label_img, dtype=bool),
                 "seed_mask": np.zeros_like(label_img, dtype=bool),
@@ -652,7 +701,7 @@ def build_smoothed_seeded_blob_labels(
         return label_img
 
     # Restrict the smoothing/thresholding domain if requested.
-    work = im_corr.astype(np.float32, copy=True)
+    work = image_bg_subtract.astype(np.float32, copy=True)
 
     if neighborhood_mask is not None:
         work[~neighborhood_mask] = 0.0
@@ -729,7 +778,7 @@ def build_smoothed_seeded_blob_labels(
         for (y, x) in coords:
             if not (0 <= y < h and 0 <= x < w):
                 continue
-            if im_corr[y, x] <= edge_thresh:
+            if image_bg_subtract[y, x] <= edge_thresh:
                 continue
 
             y0 = max(0, y - 1)
@@ -785,15 +834,15 @@ def analyze_blobs_by_frame(
     coords = events[idxs, 1:].astype(int)
 
     # Background-subtracted frame
-    im_corr = data_cube[f].astype(np.float32, copy=True)
-    im_corr -= np.float32(medians[f])
+    image_bg_subtract = data_cube[f].astype(np.float32, copy=True)
+    image_bg_subtract -= np.float32(medians[f])
 
     # crop to ROI
     y0, y1, x0, x1 = build_event_roi(
         coords, h, w, radius=event_neighborhood_radius, pad=2
     )
 
-    im_roi = im_corr[y0:y1, x0:x1]
+    im_roi = image_bg_subtract[y0:y1, x0:x1]
     coords_roi = coords.copy()
     coords_roi[:, 0] -= y0
     coords_roi[:, 1] -= x0
@@ -816,7 +865,7 @@ def analyze_blobs_by_frame(
     t_label_start = time.perf_counter()
 
     lab_img_roi = build_smoothed_seeded_blob_labels(
-        im_corr=im_roi,
+        image_bg_subtract=im_roi,
         coords=coords_roi,
         neighborhood_mask=event_neighborhood_mask,
         structure=small_struct,
@@ -1365,6 +1414,7 @@ def inject_sim_data(
         truth_rows.append({
             "injection_id": int(inj_id),
             "source_cutout_id": int(cutout_id),
+            "is_sim": True,
 
             # injected position in real FITS frame
             "frame": frame,
@@ -1390,6 +1440,51 @@ def inject_sim_data(
     truth_df = pd.DataFrame(truth_rows)
     print(f"Simulated objects inject into frames:{sorted(truth_df['frame'].unique())}")
     return injected_cube, truth_df
+
+
+def add_is_sim_flag(detections_df, sim_truth_df, padding=2):
+    """
+    Flag detected peaks that fall inside an injected simulated-event footprint.
+
+    A detection is considered simulated when:
+      1. It occurs in the same frame as an injected event.
+      2. Its (y, x) peak coordinate falls inside the injected event's
+         bounding box, expanded by `padding` pixels.
+
+    Parameters
+    ----------
+    detections_df : pd.DataFrame
+        Detection table containing frame, y, and x columns.
+    sim_truth_df : pd.DataFrame or None
+        Injection truth table returned by inject_sim_data().
+    padding : int
+        Number of pixels by which to expand each injection bounding box.
+
+    Returns
+    -------
+    flagged_df : pd.DataFrame
+        Copy of detections_df with a boolean is_sim column.
+    """
+    flagged_df = detections_df.copy()
+    flagged_df["is_sim"] = False
+
+    if sim_truth_df is None or len(sim_truth_df) == 0 or len(flagged_df) == 0:
+        print("No sim truth dataframe provided, injected sim events won't be auto-flagged.")
+        return flagged_df
+
+    for sim_row in sim_truth_df.itertuples(index=False):
+        inside_sim_event = (
+            (flagged_df["frame"] == sim_row.frame)
+            & (flagged_df["y"] >= sim_row.y0 - padding)
+            & (flagged_df["y"] < sim_row.y1 + padding)
+            & (flagged_df["x"] >= sim_row.x0 - padding)
+            & (flagged_df["x"] < sim_row.x1 + padding)
+        )
+
+        flagged_df.loc[inside_sim_event, "is_sim"] = True
+    print("Simulated events flagged.")
+
+    return flagged_df
 
 
 # MAIN FUNCTION BELOW
@@ -1448,6 +1543,9 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         "sim_frame_indices": None,
         "save_sim_truth": True,
         "sim_truth_csv": "cr_event_analysis_sim_truth.csv",
+        "sim_injection_border": 32,
+        "sim_match_padding": 2,
+        "sim_frame_indices": None,
     }
 
     params = {**default_params, **params}
@@ -1488,6 +1586,9 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     sim_frame_indices = params.get("sim_frame_indices", None)
     save_sim_truth = params.get("save_sim_truth", True)
     sim_truth_csv = params.get("sim_truth_csv", "cr_event_analysis_sim_truth.csv")
+    sim_injection_border = params.get("sim_injection_border", 32)
+    sim_match_padding = params.get("sim_match_padding", 2)
+    sim_frame_indices = params.get("sim_frame_indices", None)
 
     #check the time before starting
     start_time = time.perf_counter()
@@ -1581,9 +1682,9 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     # of badpix (hot, very hot, unresponsive) using different params
     if badpix_mask is None:
         tasks = [
-        (compute_mask_med_frame,   sigma_mult),
-        (compute_mask_first_frame, sigma_mult),
-        (compute_mask_no_response, sat_cut),
+        (compute_hot_pixel_mask,   sigma_mult),
+        (compute_veryhot_pixel_mask, sigma_mult),
+        (compute_unresponsive_mask, sat_cut),
         ]
         
         mask_hot, mask_veryhot, mask_non_res = thread_map(
@@ -1689,13 +1790,13 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     if len(all_events) == 0:
         print("No candidate peaks found.")
         empty_cols_streak = [
-            "frame", "y", "x", "event_index", "class",
+            "frame", "y", "x", "event_index", "class", "is_sim",
             "median", "sum3x3_DN", "sum3x3_e", "sum5x5_DN", "sum5x5_e",
             "blob_label", "blob_DN", "blob_e", "n_pix_blob",
         ]
 
         empty_cols_xray = [
-            "frame", "y", "x", "event_index", "class",
+            "frame", "y", "x", "event_index", "class", "is_sim",
             "median", "sum3x3_DN", "sum3x3_e", "sum5x5_DN", "sum5x5_e",
             "blob_label", "blob_DN", "blob_e", "n_pix_blob",
         ]
@@ -1792,6 +1893,14 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         print("Preclassification produced no rows.")
         return pd.DataFrame(), pd.DataFrame()
 
+    # Assign simulation origin once at the preclassification stage.
+    # Downstream dataframes inherit this value from pre_df.
+    pre_df = add_is_sim_flag(
+        detections_df=pre_df,
+        sim_truth_df=sim_truth_df,
+        padding=sim_match_padding,
+    )
+
     print("Preclassification counts:")
     class_counts = pre_df["class"].value_counts(dropna=False)
     print(class_counts.to_dict())
@@ -1832,7 +1941,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
 
     if len(df_xrays):
         xray_cols = [
-            "frame", "y", "x", "event_index", "class",
+            "frame", "y", "x", "event_index", "class", "is_sim",
             "peak_val", "r3", "r5", "n_secondary_5x5",
         ]
         df_xrays = df_xrays[xray_cols]
@@ -1857,7 +1966,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     if len(streak_candidate_idx) == 0:
         print("No post-classification streak candidates found.")
         df_streaks = pd.DataFrame(columns=[
-            "frame", "y", "x", "event_index", "class",
+            "frame", "y", "x", "event_index", "class", "is_sim",
             "median", "sum3x3_DN", "sum3x3_e", "sum5x5_DN", "sum5x5_e",
             "blob_label", "blob_DN", "blob_e", "n_pix_blob",
             "major_extent_geom", "minor_extent_geom",
@@ -1960,6 +2069,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         row_pre = {
             "event_index": int(idx),
             "class": pre_row["class"],
+            "is_sim": pre_row["is_sim"],
             "peak_val_pre": pre_row["peak_val"],
             "r3_pre": pre_row["r3"],
             "r5_pre": pre_row["r5"],
@@ -2021,7 +2131,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
 
     preferred_cols = [
         "frame", "y", "x", "event_index", "class",
-        "median",
+        "is_sim", "median",
         "sum3x3_DN", "sum3x3_e",
         "sum5x5_DN", "sum5x5_e",
         "blob_label",
