@@ -407,8 +407,8 @@ def generate_diagnostic_plots(
         ("r3", "r5", "linear", "linear"),
         ("linearity", "anisotropy", "linear", "linear"),
     # Quantization-expanded extent plots
-        ("minor_axis_extent_phase", "sum5x5_bgsub_DN", "log", "linear"),
-        ("major_axis_extent_phase", "sum5x5_bgsub_DN", "log", "linear"),
+        ("minor_axis_extent_phase", "sum5x5_bgsub_DN", "linear", "log"),
+        ("major_axis_extent_phase", "sum5x5_bgsub_DN", "linear", "log"),
 
     ]
     pre_hist_specs = [
