@@ -1,10 +1,10 @@
 {
-  "on_HPC": true,
+  "on_HPC": false,
 
   "channel_size": 32,
   "supercell_size": 128,
 
-  "sigma_mult": 12,
+  "sigma_cutoff": 12,
   "sat_cut": 5.999,
   "sigma_thresh": 5.0,
 
@@ -15,7 +15,7 @@
   "output_csv": "cr_event_analysis_results.csv",
   "output_parquet": null,
   
-  "add_sim_data": false,
+  "add_sim_data": true,
   "sim_data_path": "../Data/Sim/output_DN_array_29Apr2026.npy",
   "sim_threshold": 0.001,
   "sim_min_pixels": 3,
@@ -25,5 +25,11 @@
   "sim_injection_border": 32,
   "sim_frame_indices": [10, 20, 30, 40, 50],
   "save_sim_truth": true,
-  "sim_truth_csv": "cr_event_analysis_sim_truth.csv"
+  "sim_truth_csv": "cr_event_analysis_sim_truth.csv",
+
+  "badpix_veto_radius": 1,
+
+  "make_plots": true,
+  "plot_output_dir": "cr_event_analysis_plots",
+  "plot_dpi": 300
 }
