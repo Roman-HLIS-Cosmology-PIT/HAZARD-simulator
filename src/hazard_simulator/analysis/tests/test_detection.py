@@ -28,7 +28,7 @@ def test_find_peaks_for_frame_finds_isolated_peak():
 
     add_peak(data_cube, frame=0, y=10, x=10, amp=50.0)
 
-    peaks, threshold = find_peaks_for_frame(
+    peaks, _ , threshold = find_peaks_for_frame(
         data_cube=data_cube,
         index=0,
         badpix_mask=badpix_mask,
@@ -49,7 +49,7 @@ def test_find_peaks_for_frame_rejects_bad_pixel_peak():
     badpix_mask[10, 10] = True
     add_peak(data_cube, frame=0, y=10, x=10, amp=500.0)
 
-    peaks, _ = find_peaks_for_frame(
+    peaks, _ , _ = find_peaks_for_frame(
         data_cube=data_cube,
         index=0,
         badpix_mask=badpix_mask,
@@ -69,7 +69,7 @@ def test_find_peaks_for_frame_rejects_neighbor_of_bad_pixel_when_enabled():
     badpix_mask[10, 10] = True
     add_peak(data_cube, frame=0, y=10, x=11, amp=60.0)
 
-    peaks, _ = find_peaks_for_frame(
+    peaks, _ , _ = find_peaks_for_frame(
         data_cube=data_cube,
         index=0,
         badpix_mask=badpix_mask,
@@ -82,14 +82,26 @@ def test_find_peaks_for_frame_rejects_neighbor_of_bad_pixel_when_enabled():
     assert (0, 10, 11) not in pset
 
 
-def test_find_peaks_for_frame_keeps_neighbor_of_bad_pixel_when_disabled():
+def test_find_peaks_for_frame_still_rejects_nearby_bad_pixel_when_disabled():
+    """
+    The final badpix_veto_radius check is always applied, even when
+    exclude_badpix_neighbors=False.
+    """
     data_cube = make_test_cube(seed=4)
     badpix_mask = np.zeros((21, 21), dtype=bool)
 
     badpix_mask[10, 10] = True
-    add_peak(data_cube, frame=0, y=10, x=11, amp=60.0)
 
-    peaks, _ = find_peaks_for_frame(
+    # This peak is one pixel away from the bad pixel and should be vetoed.
+    add_peak(
+        data_cube,
+        frame=0,
+        y=10,
+        x=11,
+        amp=60.0,
+    )
+
+    peaks, _, _ = find_peaks_for_frame(
         data_cube=data_cube,
         index=0,
         badpix_mask=badpix_mask,
@@ -99,7 +111,7 @@ def test_find_peaks_for_frame_keeps_neighbor_of_bad_pixel_when_disabled():
 
     pset = peak_set(peaks)
 
-    assert (0, 10, 11) in pset
+    assert (0, 10, 11) not in pset
 
 
 def test_find_peaks_for_frame_finds_multiple_well_separated_peaks():
@@ -110,7 +122,7 @@ def test_find_peaks_for_frame_finds_multiple_well_separated_peaks():
     add_peak(data_cube, frame=0, y=15, x=15, amp=55.0)
     add_peak(data_cube, frame=0, y=5, x=15, amp=65.0)
 
-    peaks, _ = find_peaks_for_frame(
+    peaks, _ , _ = find_peaks_for_frame(
         data_cube=data_cube,
         index=0,
         badpix_mask=badpix_mask,
