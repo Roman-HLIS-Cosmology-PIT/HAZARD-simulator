@@ -30,6 +30,7 @@ from collections import Counter
 from functools import partial
 from astropy.io import fits 
 
+from cr_analysis_plotting import generate_diagnostic_plots
 
 def load_data(fits_path):
     """
@@ -183,7 +184,7 @@ def filter_transient_events(events, transient_verification="full_exposure"):
 
 
 def find_peaks_for_frame(data_cube, index, badpix_mask, sigma_thresh,
-    exclude_badpix_neighbors=False):
+    exclude_badpix_neighbors=False, veto_radius=3):
     image   = data_cube[index]
     _, median, _ = sigma_clipped_stats(image, sigma=3.0, maxiters=5)
     mad     = np.median(np.abs(image - median))
@@ -209,16 +210,15 @@ def find_peaks_for_frame(data_cube, index, badpix_mask, sigma_thresh,
 
     ys, xs = np.where(cand)
 
-    #new code to deal with peaks near badpix
-    badpix_veto_radius = 3  
+    # code to deal with peaks near badpix
     peaks  = []
     ny, nx = image.shape
 
     for y, x in zip(ys, xs):
-        ylo = max(0, y - badpix_veto_radius)
-        yhi = min(ny, y + badpix_veto_radius + 1)
-        xlo = max(0, x - badpix_veto_radius)
-        xhi = min(nx, x + badpix_veto_radius + 1)
+        ylo = max(0, y - veto_radius)
+        yhi = min(ny, y + veto_radius + 1)
+        xlo = max(0, x - veto_radius)
+        xhi = min(nx, x + veto_radius + 1)
 
         if np.any(badpix_mask[ylo:yhi, xlo:xhi]):
             continue
@@ -330,7 +330,7 @@ def preclassify_events(
                 "peak_val": p,
                 "r3": np.nan,
                 "r5": np.nan,
-                "n_secondary_5x5": -1,
+                "n_secondary_in_5x5": -1,
             })
             continue
 
@@ -521,7 +521,7 @@ def preclassify_events(
             "peak_val": p,
             "r3": float(r3),
             "r5": float(r5),
-            "n_secondary_5x5": int(nsec),
+            "n_secondary_in_5x5": int(nsec),
             "linearity": float(linearity),
             "anisotropy": float(anisotropy),
             "bbox_h_5x5": int(bbox_h),
@@ -1209,25 +1209,308 @@ def _timestamped_name(base_name, timestamp, on_hpc):
     return f"{name}_{timestamp}{ext}"
 
 
-def load_sim_data(sim_data_path):
+def load_sim_data(sim_data_path, sim_metadata_path, pixel_size=10.0,):
     """
-    Load a simulated 2D DN image containing only synthetic events.
+    Load a simulated 2D DN image and its associated energy-loss metadata.
 
-    Expected shape: (4096, 4096)
+    The metadata CSV contains one row per propagation step. PIDs use the
+    following 32-bit encoding:
+
+        7 bits  : species index
+        11 bits : primary-particle index
+        14 bits : delta-ray index
+
+    Rows belonging to a primary particle and all of its delta rays are grouped
+    together using parent_PID, which is obtained by clearing the lower
+    14 delta-ray bits.
+
+    Parameters
+    ----------
+    sim_data_path : str or path-like
+        Path to the 2D NumPy array containing the simulated DN image.
+
+    sim_metadata_path : str or path-like
+        Path to the energy-loss CSV containing at least:
+        PID, step, x, y, z, dE, and delta_energy.
+
+    pixel_size : float
+        Pixel pitch in microns.
+
+    Returns
+    -------
+    sim_data : np.ndarray
+        Simulated 2D DN image as float32.
+
+    sim_metadata_df : pd.DataFrame
+        Event-level metadata with one row per parent simulated event.
     """
-    sim = np.load(sim_data_path)
+    # Load the simulated image
+    sim_data = np.load(sim_data_path)
 
-    if sim.ndim != 2:
+    if sim_data.ndim != 2:
         raise ValueError(
-            f"Sim data must be 2D, got shape {sim.shape}"
+            f"Sim data must be 2D, got shape {sim_data.shape}."
         )
 
-    if sim.shape != (4096, 4096):
+    if sim_data.shape != (4096, 4096):
         raise ValueError(
-            f"Sim data must have shape (4096, 4096), got {sim.shape}"
+            "Sim data must have shape (4096, 4096), "
+            f"got {sim_data.shape}."
         )
 
-    return sim.astype(np.float32, copy=False)
+    sim_data = sim_data.astype(np.float32, copy=False)
+
+    # Load the step-level simulation metadata
+    sim_step_metadata_df = pd.read_csv(sim_metadata_path)
+
+    required_columns = {
+        "PID",
+        "step",
+        "x",
+        "y",
+        "z",
+        "dE",
+        "delta_energy",
+    }
+
+    missing_columns = required_columns - set(sim_step_metadata_df.columns)
+
+    if missing_columns:
+        raise ValueError(
+            "Simulation metadata CSV is missing required columns: "
+            f"{sorted(missing_columns)}"
+        )
+
+    if len(sim_step_metadata_df) == 0:
+        raise ValueError("Simulation metadata CSV contains no rows.")
+
+    sim_step_metadata_df = sim_step_metadata_df.copy()
+
+    # Ensure PID is stored as an integer before applying bit operations.
+    sim_step_metadata_df["PID"] = pd.to_numeric(
+        sim_step_metadata_df["PID"],
+        errors="raise",
+    ).astype(np.int64)
+
+    pid_values = sim_step_metadata_df["PID"].to_numpy(dtype=np.int64)
+
+    if np.any(pid_values < 0) or np.any(pid_values > (2**32 - 1)):
+        raise ValueError(
+            "Simulation PIDs must be unsigned 32-bit integer values."
+        )
+
+    # Decode PID bit fields
+    delta_bits = 14
+    primary_bits = 11
+    species_bits = 7
+
+    delta_mask = (1 << delta_bits) - 1
+    primary_mask = (1 << primary_bits) - 1
+    species_mask = (1 << species_bits) - 1
+
+    # Lowest 14 bits
+    sim_step_metadata_df["delta_index"] = (
+        pid_values & delta_mask
+    )
+
+    # Next 11 bits
+    sim_step_metadata_df["primary_index"] = (
+        (pid_values >> delta_bits) & primary_mask
+    )
+
+    # Highest 7 bits
+    sim_step_metadata_df["species_index"] = (
+        pid_values >> (delta_bits + primary_bits)
+    ) & species_mask
+
+    # Clear the lower 14 delta-ray bits.
+    sim_step_metadata_df["parent_PID"] = (
+        pid_values & ~delta_mask
+    )
+
+    sim_step_metadata_df["is_delta_ray"] = (
+        sim_step_metadata_df["delta_index"] != 0
+    )
+
+    # Used to count distinct delta-ray PIDs during aggregation.
+    sim_step_metadata_df["delta_PID"] = (
+        sim_step_metadata_df["PID"].where(
+            sim_step_metadata_df["is_delta_ray"]
+        )
+    )
+
+    sim_step_metadata_df["sim_x"] = np.floor(
+        pd.to_numeric(
+            sim_step_metadata_df["x"],
+            errors="raise",
+        ) / pixel_size).astype(np.int64)
+
+    sim_step_metadata_df["sim_y"] = np.floor(
+        pd.to_numeric(
+            sim_step_metadata_df["y"],
+            errors="raise",
+        ) / pixel_size).astype(np.int64)
+
+    # Collapse the step-level table into one row per parent event
+    sim_metadata_df = (
+        sim_step_metadata_df
+        .groupby("parent_PID", as_index=False, sort=True)
+        .agg(
+            species_index=("species_index", "first"),
+            primary_index=("primary_index", "first"),
+
+            # Number of distinct particle trajectories:
+            # one primary plus any associated delta rays.
+            n_particle_PIDs=("PID", "nunique"),
+
+            # Number of distinct delta-ray trajectories.
+            n_delta_rays=("delta_PID", "nunique"),
+
+            # Metadata row and step counts.
+            n_steps=("PID", "size"),
+            n_primary_steps=(
+                "is_delta_ray",
+                lambda values: int((~values).sum()),
+            ),
+            n_delta_steps=("is_delta_ray", "sum"),
+
+            # Full trajectory bounds in microns.
+            x_min_um=("x", "min"),
+            x_max_um=("x", "max"),
+            y_min_um=("y", "min"),
+            y_max_um=("y", "max"),
+            z_min_um=("z", "min"),
+            z_max_um=("z", "max"),
+
+            # Energy quantities.
+            total_dE_MeV=("dE", "sum"),
+            total_delta_energy_MeV=("delta_energy", "sum"),
+        )
+    )
+
+    sim_metadata_df["n_delta_steps"] = (
+        sim_metadata_df["n_delta_steps"].astype(int)
+    )
+
+    # Find the pixel bounds of energy deposited into the image
+    deposit_rows = sim_step_metadata_df.loc[
+        pd.to_numeric(
+            sim_step_metadata_df["dE"],
+            errors="coerce",
+        ).fillna(0.0) > 0.0
+    ].copy()
+
+    deposit_bounds_df = (
+        deposit_rows
+        .groupby("parent_PID", as_index=False, sort=True)
+        .agg(
+            sim_x0=("sim_x", "min"),
+            sim_x_last=("sim_x", "max"),
+            sim_y0=("sim_y", "min"),
+            sim_y_last=("sim_y", "max"),
+        )
+    )
+
+    # Convert inclusive maximum pixel indices into half-open bounds:
+    # [sim_y0:sim_y1, sim_x0:sim_x1]
+    deposit_bounds_df["sim_x1"] = (
+        deposit_bounds_df["sim_x_last"] + 1
+    )
+
+    deposit_bounds_df["sim_y1"] = (
+        deposit_bounds_df["sim_y_last"] + 1
+    )
+
+    deposit_bounds_df = deposit_bounds_df.drop(
+        columns=["sim_x_last", "sim_y_last"]
+    )
+
+    # Attach the deposited-energy pixel bounds to each parent event.
+    sim_metadata_df = sim_metadata_df.merge(
+        deposit_bounds_df,
+        on="parent_PID",
+        how="left",
+        validate="one_to_one",
+    )
+
+    # Validate and clip the pixel bounds
+    bounds_columns = [
+        "sim_x0",
+        "sim_x1",
+        "sim_y0",
+        "sim_y1",
+    ]
+
+    missing_bounds = sim_metadata_df[bounds_columns].isna().any(axis=1)
+
+    if missing_bounds.any():
+        missing_parent_pids = sim_metadata_df.loc[
+            missing_bounds,
+            "parent_PID",
+        ].tolist()
+
+        raise ValueError(
+            "Some parent events have no positive-dE spatial bounds. "
+            f"Parent PIDs: {missing_parent_pids}"
+        )
+
+    sim_h, sim_w = sim_data.shape
+
+    sim_metadata_df["sim_x0"] = (
+        sim_metadata_df["sim_x0"]
+        .clip(0, sim_w)
+        .astype(np.int64)
+    )
+
+    sim_metadata_df["sim_x1"] = (
+        sim_metadata_df["sim_x1"]
+        .clip(0, sim_w)
+        .astype(np.int64)
+    )
+
+    sim_metadata_df["sim_y0"] = (
+        sim_metadata_df["sim_y0"]
+        .clip(0, sim_h)
+        .astype(np.int64)
+    )
+
+    sim_metadata_df["sim_y1"] = (
+        sim_metadata_df["sim_y1"]
+        .clip(0, sim_h)
+        .astype(np.int64)
+    )
+
+    sim_metadata_df["n_delta_steps"] = (
+        sim_metadata_df["n_delta_steps"].astype(int)
+    )
+
+    # A readable numeric label that does not require importing GCRsim.
+    sim_metadata_df["parent_label"] = (
+        "S"
+        + sim_metadata_df["species_index"].astype(str)
+        + "-P"
+        + sim_metadata_df["primary_index"].map(
+            lambda value: f"{value:04d}"
+        )
+    )
+
+    n_step_rows = len(sim_step_metadata_df)
+    n_particle_pids = sim_step_metadata_df["PID"].nunique()
+    n_parent_events = len(sim_metadata_df)
+    n_delta_pids = int(
+        sim_step_metadata_df.loc[
+            sim_step_metadata_df["is_delta_ray"],
+            "PID",
+        ].nunique()
+    )
+
+    print(f"Loaded simulated image with shape {sim_data.shape}.")
+    print(f"Loaded {n_step_rows} simulation metadata rows.")
+    print(f"Found {n_particle_pids} distinct particle PIDs.")
+    print(f"Found {n_parent_events} distinct parent simulated events.")
+    print(f"Found {n_delta_pids} distinct delta-ray PIDs.")
+
+    return sim_data, sim_metadata_df
 
 
 def extract_sim_data(sim_data, threshold=1e-6, min_pixels=1, structure=None, return_metadata=False):
@@ -1342,7 +1625,7 @@ def inject_sim_data(
     data_cube : (Nframe, h, w) ndarray
         Real data cube to modify.
     sim_cutouts : list of dict
-        Output of extract_sim_event_cutouts.
+        Output of extract_sim_data.
     n_injections : int
         Number of cutouts to inject in total.
     rng : np.random.Generator or None
@@ -1416,7 +1699,30 @@ def inject_sim_data(
             "source_cutout_id": int(cutout_id),
             "is_sim": True,
 
-            # injected position in real FITS frame
+            # Parent simulation identity
+            "parent_PID": int(cut.get("parent_PID", -1)),
+            "species_index": int(cut.get("species_index", -1)),
+            "primary_index": int(cut.get("primary_index", -1)),
+
+            # Quality of the source cutout-to-metadata mapping
+            "metadata_overlap_pixels": int(
+                cut.get("metadata_overlap_pixels", 0)
+            ),
+            "metadata_overlap_weight": float(
+                cut.get("metadata_overlap_weight", 0.0)
+            ),
+            "metadata_match_fraction": float(
+                cut.get("metadata_match_fraction", 0.0)
+            ),
+            "n_parent_candidates": int(
+                cut.get("n_parent_candidates", 0)
+            ),
+            "metadata_match_status": cut.get(
+                "metadata_match_status",
+                "unknown",
+            ),
+
+            # Injected position in the real FITS frame
             "frame": frame,
             "y0": int(y0),
             "y1": int(y1),
@@ -1425,17 +1731,17 @@ def inject_sim_data(
             "peak_y": int(y0 + peak_y_local),
             "peak_x": int(x0 + peak_x_local),
 
-            # original source position in sim_data frame
+            # Original source position in sim_data
             "source_y0": int(src_y0),
             "source_y1": int(src_y1),
             "source_x0": int(src_x0),
             "source_x1": int(src_x1),
 
-
             "n_pix_sim": int(cut["n_pix"]),
             "peak_dn_sim": float(cut["peak_dn"]),
             "sum_dn_sim": float(cut["sum_dn"]),
         })
+
 
     truth_df = pd.DataFrame(truth_rows)
     print(f"Simulated objects inject into frames:{sorted(truth_df['frame'].unique())}")
@@ -1467,10 +1773,39 @@ def add_is_sim_flag(detections_df, sim_truth_df, padding=2):
     """
     flagged_df = detections_df.copy()
     flagged_df["is_sim"] = False
+    flagged_df["sim_PID"] = np.int64(-1)
+    flagged_df["sim_injection_id"] = np.int64(-1)
 
-    if sim_truth_df is None or len(sim_truth_df) == 0 or len(flagged_df) == 0:
-        print("No sim truth dataframe provided, injected sim events won't be auto-flagged.")
+    if (
+        sim_truth_df is None
+        or len(sim_truth_df) == 0
+        or len(flagged_df) == 0
+    ):
+        print(
+            "No sim truth dataframe provided; injected sim events "
+            "will not be auto-flagged."
+        )
         return flagged_df
+
+    required_truth_columns = {
+        "injection_id",
+        "parent_PID",
+        "frame",
+        "y0",
+        "y1",
+        "x0",
+        "x1",
+    }
+
+    missing = required_truth_columns - set(sim_truth_df.columns)
+
+    if missing:
+        raise ValueError(
+            "sim_truth_df is missing required columns: "
+            f"{sorted(missing)}"
+        )
+
+    recovered_injection_ids = set()
 
     for sim_row in sim_truth_df.itertuples(index=False):
         inside_sim_event = (
@@ -1481,10 +1816,409 @@ def add_is_sim_flag(detections_df, sim_truth_df, padding=2):
             & (flagged_df["x"] < sim_row.x1 + padding)
         )
 
-        flagged_df.loc[inside_sim_event, "is_sim"] = True
-    print("Simulated events flagged.")
+        if inside_sim_event.any():
+            recovered_injection_ids.add(int(sim_row.injection_id))
+
+            flagged_df.loc[inside_sim_event, "is_sim"] = True
+
+            flagged_df.loc[
+                inside_sim_event,
+                "sim_PID",
+            ] = int(sim_row.parent_PID)
+
+            flagged_df.loc[
+                inside_sim_event,
+                "sim_injection_id",
+            ] = int(sim_row.injection_id)
+
+    flagged_df["sim_PID"] = flagged_df["sim_PID"].astype(np.int64)
+    flagged_df["sim_injection_id"] = (
+        flagged_df["sim_injection_id"].astype(np.int64)
+    )
+
+    print(
+        f"Flagged detections associated with "
+        f"{len(recovered_injection_ids)}/{len(sim_truth_df)} "
+        "injected simulated events."
+    )
 
     return flagged_df
+
+
+def add_derived_signal_columns(df):
+    """
+    Add reconstructed 5x5 background-subtracted signal columns when
+    the required peak and r5 columns are available.
+
+    The preclassifier defines:
+
+        r5 = (sum5x5 - peak) / peak
+
+    so:
+
+        sum5x5 = peak * (1 + r5)
+    """
+    out = df.copy()
+
+    # Standard preclassification dataframe
+    if (
+        "sum5x5_bgsub_DN" not in out.columns
+        and {"peak_val", "r5"}.issubset(out.columns)
+    ):
+        out["sum5x5_bgsub_DN"] = (
+            pd.to_numeric(out["peak_val"], errors="coerce")
+            * (
+                1.0
+                + pd.to_numeric(out["r5"], errors="coerce")
+            )
+        )
+
+    if (
+        "sum5x5_bgsub_DN" not in out.columns
+        and {"peak_val", "r5"}.issubset(out.columns)
+    ):
+        out["sum5x5_bgsub_DN"] = (
+            pd.to_numeric(out["peak_val"], errors="coerce")
+            * (
+                1.0
+                + pd.to_numeric(out["r5"], errors="coerce")
+            )
+        )
+
+    return out
+
+def count_recovered_injections(events, sim_truth_df, padding=2):
+    """
+    Count distinct injected events that contain at least one detected peak.
+    """
+    events = np.asarray(events)
+
+    recovered_ids = []
+    match_counts = {}
+
+    for sim_row in sim_truth_df.itertuples(index=False):
+        same_frame = events[:, 0] == sim_row.frame
+
+        inside_box = (
+            same_frame
+            & (events[:, 1] >= sim_row.y0 - padding)
+            & (events[:, 1] < sim_row.y1 + padding)
+            & (events[:, 2] >= sim_row.x0 - padding)
+            & (events[:, 2] < sim_row.x1 + padding)
+        )
+
+        n_matches = int(np.count_nonzero(inside_box))
+        match_counts[int(sim_row.injection_id)] = n_matches
+
+        if n_matches > 0:
+            recovered_ids.append(int(sim_row.injection_id))
+
+    return recovered_ids, match_counts
+
+
+def map_parent_pids_to_sim_cutouts(
+    sim_cutouts,
+    sim_metadata_df,
+    bbox_padding=1,
+):
+    """
+    Match connected-component cutouts to event-level simulation metadata.
+
+    The metadata must contain one row per parent event with pixel-space
+    bounding boxes:
+
+        sim_y0, sim_y1, sim_x0, sim_x1
+
+    Matching priority:
+      1. Exact bounding-box match.
+      2. Highest bounding-box intersection-over-union.
+      3. Shortest center-to-center distance as a tie breaker.
+
+    Parameters
+    ----------
+    sim_cutouts : list of dict
+        Output from extract_sim_data(). Each cutout must contain bbox.
+
+    sim_metadata_df : pd.DataFrame
+        One row per parent simulated event.
+
+    bbox_padding : int, default=1
+        Number of pixels by which to expand metadata bounds when testing
+        overlap. This accommodates small differences caused by thresholding
+        or rounding.
+
+    Returns
+    -------
+    mapped_cutouts : list of dict
+        Copies of sim_cutouts with parent PID metadata attached.
+
+    cutout_pid_map_df : pd.DataFrame
+        Summary of the cutout-to-parent mapping.
+    """
+    required_columns = {
+        "parent_PID",
+        "species_index",
+        "primary_index",
+        "sim_y0",
+        "sim_y1",
+        "sim_x0",
+        "sim_x1",
+    }
+
+    missing = required_columns - set(sim_metadata_df.columns)
+
+    if missing:
+        raise ValueError(
+            "Event-level sim_metadata_df is missing columns: "
+            f"{sorted(missing)}"
+        )
+
+    metadata = sim_metadata_df.copy()
+
+    integer_columns = [
+        "parent_PID",
+        "species_index",
+        "primary_index",
+        "sim_y0",
+        "sim_y1",
+        "sim_x0",
+        "sim_x1",
+    ]
+
+    for column in integer_columns:
+        metadata[column] = pd.to_numeric(
+            metadata[column],
+            errors="raise",
+        ).astype(np.int64)
+
+    mapped_cutouts = []
+    mapping_rows = []
+
+    for cutout_id, original_cutout in enumerate(sim_cutouts):
+        cutout = original_cutout.copy()
+
+        cut_y0, cut_y1, cut_x0, cut_x1 = cutout["bbox"]
+
+        cut_height = cut_y1 - cut_y0
+        cut_width = cut_x1 - cut_x0
+        cut_area = max(cut_height * cut_width, 1)
+
+        scores = metadata.copy()
+
+        # Check for exact equality before applying padding.
+        scores["exact_bbox_match"] = (
+            (scores["sim_y0"] == cut_y0)
+            & (scores["sim_y1"] == cut_y1)
+            & (scores["sim_x0"] == cut_x0)
+            & (scores["sim_x1"] == cut_x1)
+        )
+
+        # Expand the event-level metadata bounds slightly.
+        event_y0 = scores["sim_y0"] - bbox_padding
+        event_y1 = scores["sim_y1"] + bbox_padding
+        event_x0 = scores["sim_x0"] - bbox_padding
+        event_x1 = scores["sim_x1"] + bbox_padding
+
+        intersection_height = np.maximum(
+            0,
+            np.minimum(cut_y1, event_y1)
+            - np.maximum(cut_y0, event_y0),
+        )
+
+        intersection_width = np.maximum(
+            0,
+            np.minimum(cut_x1, event_x1)
+            - np.maximum(cut_x0, event_x0),
+        )
+
+        scores["intersection_area"] = (
+            intersection_height * intersection_width
+        )
+
+        event_area = np.maximum(
+            (event_y1 - event_y0) * (event_x1 - event_x0),
+            1,
+        )
+
+        union_area = (
+            cut_area
+            + event_area
+            - scores["intersection_area"]
+        )
+
+        scores["bbox_iou"] = (
+            scores["intersection_area"]
+            / np.maximum(union_area, 1)
+        )
+
+        scores["cutout_overlap_fraction"] = (
+            scores["intersection_area"] / cut_area
+        )
+
+        # Center-distance tie breaker.
+        cut_center_y = 0.5 * (cut_y0 + cut_y1)
+        cut_center_x = 0.5 * (cut_x0 + cut_x1)
+
+        event_center_y = 0.5 * (
+            scores["sim_y0"] + scores["sim_y1"]
+        )
+
+        event_center_x = 0.5 * (
+            scores["sim_x0"] + scores["sim_x1"]
+        )
+
+        scores["center_distance_pix"] = np.sqrt(
+            (event_center_y - cut_center_y) ** 2
+            + (event_center_x - cut_center_x) ** 2
+        )
+
+        candidates = scores.loc[
+            scores["intersection_area"] > 0
+        ].copy()
+
+        if len(candidates) == 0:
+            parent_PID = -1
+            species_index = -1
+            primary_index = -1
+
+            match_status = "unmatched"
+            exact_bbox_match = False
+            intersection_area = 0
+            bbox_iou = 0.0
+            cutout_overlap_fraction = 0.0
+            center_distance_pix = np.nan
+            n_parent_candidates = 0
+
+        else:
+            candidates = candidates.sort_values(
+                by=[
+                    "exact_bbox_match",
+                    "bbox_iou",
+                    "cutout_overlap_fraction",
+                    "intersection_area",
+                    "center_distance_pix",
+                ],
+                ascending=[
+                    False,
+                    False,
+                    False,
+                    False,
+                    True,
+                ],
+            ).reset_index(drop=True)
+
+            best = candidates.iloc[0]
+
+            parent_PID = int(best["parent_PID"])
+            species_index = int(best["species_index"])
+            primary_index = int(best["primary_index"])
+
+            exact_bbox_match = bool(
+                best["exact_bbox_match"]
+            )
+
+            intersection_area = int(
+                best["intersection_area"]
+            )
+
+            bbox_iou = float(best["bbox_iou"])
+
+            cutout_overlap_fraction = float(
+                best["cutout_overlap_fraction"]
+            )
+
+            center_distance_pix = float(
+                best["center_distance_pix"]
+            )
+
+            n_parent_candidates = int(len(candidates))
+
+            if exact_bbox_match:
+                match_status = "exact_bbox"
+            elif n_parent_candidates == 1:
+                match_status = "bbox_overlap"
+            else:
+                match_status = "multiple_bbox_candidates"
+
+        # Attach identity and match diagnostics to the cutout.
+        cutout["source_cutout_id"] = int(cutout_id)
+        cutout["parent_PID"] = int(parent_PID)
+        cutout["species_index"] = int(species_index)
+        cutout["primary_index"] = int(primary_index)
+
+        cutout["metadata_match_status"] = match_status
+        cutout["metadata_exact_bbox_match"] = exact_bbox_match
+        cutout["metadata_bbox_overlap_pixels"] = (
+            intersection_area
+        )
+        cutout["metadata_bbox_iou"] = bbox_iou
+        cutout["metadata_cutout_overlap_fraction"] = (
+            cutout_overlap_fraction
+        )
+        cutout["metadata_center_distance_pix"] = (
+            center_distance_pix
+        )
+        cutout["n_parent_candidates"] = (
+            n_parent_candidates
+        )
+
+        mapped_cutouts.append(cutout)
+
+        mapping_rows.append({
+            "source_cutout_id": int(cutout_id),
+            "source_y0": int(cut_y0),
+            "source_y1": int(cut_y1),
+            "source_x0": int(cut_x0),
+            "source_x1": int(cut_x1),
+            "n_pix_sim": int(cutout["n_pix"]),
+            "parent_PID": int(parent_PID),
+            "species_index": int(species_index),
+            "primary_index": int(primary_index),
+            "metadata_match_status": match_status,
+            "metadata_exact_bbox_match": exact_bbox_match,
+            "metadata_bbox_overlap_pixels": (
+                intersection_area
+            ),
+            "metadata_bbox_iou": bbox_iou,
+            "metadata_cutout_overlap_fraction": (
+                cutout_overlap_fraction
+            ),
+            "metadata_center_distance_pix": (
+                center_distance_pix
+            ),
+            "n_parent_candidates": (
+                n_parent_candidates
+            ),
+        })
+
+    cutout_pid_map_df = pd.DataFrame(mapping_rows)
+
+    matched_mask = cutout_pid_map_df["parent_PID"] >= 0
+    n_matched = int(matched_mask.sum())
+
+    duplicated_parent_mask = (
+        cutout_pid_map_df.loc[matched_mask, "parent_PID"]
+        .duplicated(keep=False)
+    )
+
+    duplicated_parent_ids = (
+        cutout_pid_map_df.loc[matched_mask]
+        .loc[duplicated_parent_mask, "parent_PID"]
+        .unique()
+    )
+
+    print(
+        f"Mapped {n_matched}/{len(cutout_pid_map_df)} "
+        "sim cutouts to parent PIDs."
+    )
+
+    if len(duplicated_parent_ids) > 0:
+        print(
+            "Warning: multiple cutouts were assigned to the same "
+            f"parent PID: {duplicated_parent_ids.tolist()}"
+        )
+
+    return mapped_cutouts, cutout_pid_map_df
 
 
 # MAIN FUNCTION BELOW
@@ -1534,6 +2268,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         # optional simulated event injection
         "add_sim_data": False,
         "sim_data_path": None,
+        "sim_metadata_path": None,
         "sim_threshold": 1e-6,
         "sim_min_pixels": 1,
         "n_sim_injections": 10,
@@ -1543,9 +2278,15 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         "sim_frame_indices": None,
         "save_sim_truth": True,
         "sim_truth_csv": "cr_event_analysis_sim_truth.csv",
+        "sim_processed_md_csv": "cr_event_analysis_processed_sim_md.csv",
         "sim_injection_border": 32,
         "sim_match_padding": 2,
         "sim_frame_indices": None,
+
+        # automatic diagnostic plotting
+        "make_plots": True,
+        "plot_output_dir": "cr_event_analysis_plots",
+        "plot_dpi": 180,
     }
 
     params = {**default_params, **params}
@@ -1577,6 +2318,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
 
     add_sim_data = params.get("add_sim_data", False)
     sim_data_path = params.get("sim_data_path", None)
+    sim_metadata_path = params.get("sim_metadata_path", None)
     sim_threshold = params.get("sim_threshold", 1e-6)
     sim_min_pixels = params.get("sim_min_pixels", 1)
     n_sim_injections = params.get("n_sim_injections", 10)
@@ -1586,9 +2328,18 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     sim_frame_indices = params.get("sim_frame_indices", None)
     save_sim_truth = params.get("save_sim_truth", True)
     sim_truth_csv = params.get("sim_truth_csv", "cr_event_analysis_sim_truth.csv")
+    sim_processed_md_csv = params.get("sim_processed_md_csv","cr_event_analysis_processed_sim_md.csv")
     sim_injection_border = params.get("sim_injection_border", 32)
     sim_match_padding = params.get("sim_match_padding", 2)
     sim_frame_indices = params.get("sim_frame_indices", None)
+    badpix_veto_radius = params.get("badpix_veto_radius", 2)
+
+    make_plots = params.get("make_plots", True)
+    plot_output_dir = params.get(
+        "plot_output_dir",
+        "cr_event_analysis_plots",
+    )
+    plot_dpi = params.get("plot_dpi", 180)
 
     #check the time before starting
     start_time = time.perf_counter()
@@ -1603,6 +2354,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     print("Number of frames in data cube:", Nframe)
     #Load in sim data, if needed
     sim_truth_df = None
+    sim_metadata_df = None
 
     if add_sim_data:
         if sim_data_path is None:
@@ -1610,12 +2362,19 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
                 "params['add_sim_data'] is True, but params['sim_data_path'] is None."
             )
 
-        print(f"Loading simulated event image from: {sim_data_path}")
-        sim_data = load_sim_data(sim_data_path)
+        if sim_metadata_path is None:
+            raise ValueError(
+                "params['add_sim_data'] is True, "
+                "but params['sim_metadata_path'] is None."
+            )
+
+        print(f"Loading simulated event image from: {sim_data_path} and metadata from: {sim_metadata_path}")
+
+        sim_data, sim_metadata_df = load_sim_data(sim_data_path, sim_metadata_path)
 
         rng = np.random.default_rng(sim_random_seed)
 
-        sim_cutouts, sim_metadata = extract_sim_data(
+        sim_cutouts, extraction_info = extract_sim_data(
             sim_data,
             threshold=sim_threshold,
             min_pixels=sim_min_pixels,
@@ -1623,15 +2382,25 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
             return_metadata=True,
         )
 
-        #print(f"Found {len(sim_cutouts)} simulated event cutouts to inject")
         print(
-            f"Sim array contains {sim_metadata['n_connected_components_raw']} "
+            f"Sim array contains {extraction_info['n_connected_components_raw']} "
             f"connected objects above threshold; "
-            f"{sim_metadata['n_cutouts_kept']} passed min_pixels."
+            f"{extraction_info['n_cutouts_kept']} passed min_pixels."
         )
 
         if len(sim_cutouts) == 0:
             raise ValueError("No simulated events found above threshold in sim_data.")
+
+        if len(sim_metadata_df) == extraction_info['n_connected_components_raw']:
+            print("Number of found sim events matches supplied metadata.")
+        else:
+            print("Number of found sim events DOES NOT match supplied metadata. Verify supplied paths are correct.")
+
+        sim_cutouts, cutout_pid_map_df = map_parent_pids_to_sim_cutouts(
+            sim_cutouts=sim_cutouts,
+            sim_metadata_df=sim_metadata_df,
+            bbox_padding=1,
+        )
 
         data_cube, sim_truth_df = inject_sim_data(
             data_cube=data_cube,
@@ -1644,12 +2413,12 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         )
 
         print(f"Injected {len(sim_truth_df)} simulated events into the FITS cube"
-              f" from {sim_metadata['n_cutouts_kept']} available such events")
+              f" from {extraction_info['n_cutouts_kept']} available such events")
 
-        sim_truth_df["n_sim_events_available"] = sim_metadata["n_cutouts_kept"]
-        sim_truth_df["n_sim_components_raw"] = sim_metadata["n_connected_components_raw"]
-        sim_truth_df["sim_threshold"] = sim_metadata["threshold"]
-        sim_truth_df["sim_min_pixels"] = sim_metadata["min_pixels"]
+        sim_truth_df["n_sim_events_available"] = extraction_info["n_cutouts_kept"]
+        sim_truth_df["n_sim_components_raw"] = extraction_info["n_connected_components_raw"]
+        sim_truth_df["sim_threshold"] = extraction_info["threshold"]
+        sim_truth_df["sim_min_pixels"] = extraction_info["min_pixels"]
 
     #check the time
     now = time.perf_counter()
@@ -1749,7 +2518,36 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         total_time = time.perf_counter() - start_time
         print("Using provided bad pixel mask (skipping computation)")
         print(f"Time to load badpix mask: {badpix_time}s; total time elapsed: {total_time}s")
-        
+
+    #check to see if simulated events are near/on badpix
+    sim_badpix_rows = []
+
+    for sim_row in sim_truth_df.itertuples(index=False):
+        frame = int(sim_row.frame)
+        y = int(sim_row.peak_y)
+        x = int(sim_row.peak_x)
+
+        ylo = max(0, y - badpix_veto_radius)
+        yhi = min(h, y + badpix_veto_radius + 1)
+        xlo = max(0, x - badpix_veto_radius)
+        xhi = min(w, x + badpix_veto_radius + 1)
+
+        peak_on_badpix = bool(badpix_mask[y, x])
+        badpix_in_veto_box = bool(
+            np.any(badpix_mask[ylo:yhi, xlo:xhi])
+        )
+
+        sim_badpix_rows.append({
+            "injection_id": int(sim_row.injection_id),
+            "frame": frame,
+            "peak_y": y,
+            "peak_x": x,
+            "peak_on_badpix": peak_on_badpix,
+            "badpix_in_veto_box": badpix_in_veto_box,
+        })
+
+    sim_badpix_df = pd.DataFrame(sim_badpix_rows)
+
     #check the time
     now = time.perf_counter()
 
@@ -1759,11 +2557,20 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     " \n These outlier peaks will be our event candidates" \
         f"\n Using a threshold sigma of {sigma_thresh} * MAD * 1.4826 ~ {peak_threshold_estimate} DN")
 
+    print(f"Rejecting events if they land on or near a badpix with a veto radius of {badpix_veto_radius}")
+    print("Injected peaks directly on bad pixels:",
+          int(sim_badpix_df["peak_on_badpix"].sum())
+    )
+    print(f"Injected peaks rejected by the {badpix_veto_radius}-pixel badpix veto:",
+        int(sim_badpix_df["badpix_in_veto_box"].sum())
+    )
+
     find_peaks_worker = partial(
         find_peaks_for_frame,
         data_cube,
         badpix_mask=badpix_mask,
         sigma_thresh=sigma_thresh,
+        veto_radius = badpix_veto_radius,
     )
 
     peak_results = thread_map(
@@ -1809,6 +2616,17 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     print(f"Time to detect candidate peaks: {peak_time:.2f}s; total time elapsed: {total_time:.2f}s")
     now = time.perf_counter()
 
+    if sim_truth_df is not None:
+        recovered_before_transient, matches_before = count_recovered_injections(
+            events,
+            sim_truth_df,
+            padding=sim_match_padding,
+        )
+
+        print(
+            "Injected events represented after peak finding:",
+            f"{len(recovered_before_transient)}/{len(sim_truth_df)}",
+        )
 
     # Previous-frame / full-exposure transient verification
     print("Events of interest are transients, so we'll use a transient-only filter")
@@ -1820,6 +2638,21 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     )
     print(f"Removed {len(events)-len(single_epoch_events)} events")
     print(f"Single-epoch peaks kept: {len(single_epoch_events)}/{len(events)}, proportion: {(len(single_epoch_events) / len(events)):.2%}")
+
+    #check to see if transient verification removed any sim events
+    if sim_truth_df is not None:
+        recovered_after_transient, matches_after = count_recovered_injections(
+            single_epoch_events,
+            sim_truth_df,
+            padding=sim_match_padding,
+        )
+
+        print("Injected events represented after transient filtering:",
+            f"{len(recovered_after_transient)}/{len(sim_truth_df)}")
+
+        lost_by_transient = sorted(set(recovered_before_transient) - set(recovered_after_transient))
+
+        print("Injection IDs lost during transient filtering:", lost_by_transient)
 
     # generate initial pandas dataframe
 
@@ -1834,8 +2667,6 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     support5_thresh = 0.40 # was 0.35
     secondary_peak_rel_thresh = 0.30  #was 0.35
     secondary_peak_abs_thresh = 16.0 # was None
-
-
 
     print("Preclassifying raw peaks...")
     print("Using the following classification parameters:")
@@ -1880,18 +2711,20 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
                 "peak_val": np.nan,
                 "r3": np.nan,
                 "r5": np.nan,
-                "n_secondary_5x5": np.nan,
+                "n_secondary_in_5x5": np.nan,
                 "linearity": np.nan,
                 "anisotropy": np.nan,
                 "bbox_h_5x5": np.nan,
                 "bbox_w_5x5": np.nan,
             })
-
+    #create a "total_signal (background substracted)" column from peak and r5 values
     pre_df = pd.DataFrame(pre_rows)
 
     if len(pre_df) == 0:
         print("Preclassification produced no rows.")
         return pd.DataFrame(), pd.DataFrame()
+    
+    pre_df = add_derived_signal_columns(pre_df)
 
     # Assign simulation origin once at the preclassification stage.
     # Downstream dataframes inherit this value from pre_df.
@@ -1901,6 +2734,89 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         padding=sim_match_padding,
     )
 
+    #check to see what happens to injected sim events
+    recovered_in_pre, pre_match_counts = count_recovered_injections(
+        pre_df[["frame", "y", "x"]].to_numpy(),
+        sim_truth_df,
+        padding=sim_match_padding,
+    )
+
+    missing_in_pre = sim_truth_df.loc[
+        ~sim_truth_df["injection_id"].isin(recovered_in_pre),
+        [
+            "injection_id",
+            "frame",
+            "peak_y",
+            "peak_x",
+            "peak_dn_sim",
+            "n_pix_sim",
+            "y0",
+            "y1",
+            "x0",
+            "x1",
+        ],
+    ].copy()
+
+    print(
+        f"Distinct injections recovered in pre_df: "
+        f"{len(recovered_in_pre)}/{len(sim_truth_df)}"
+    )
+
+    print("Missing simulated injections:")
+    print(missing_in_pre.to_string(index=False))
+
+
+    pre_match_df = (
+        pd.Series(pre_match_counts, name="n_pre_matches")
+        .rename_axis("injection_id")
+        .reset_index()
+    )
+
+    sim_recovery_df = sim_truth_df.merge(
+        pre_match_df,
+        on="injection_id",
+        how="left",
+        validate="one_to_one",
+    )
+
+    sim_recovery_df["n_pre_matches"] = (
+        sim_recovery_df["n_pre_matches"]
+        .fillna(0)
+        .astype(int)
+    )
+
+    sim_recovery_df["recovered_in_pre"] = (
+        sim_recovery_df["n_pre_matches"] > 0
+    )
+
+    sim_recovery_df["multiple_pre_matches"] = (
+        sim_recovery_df["n_pre_matches"] > 1
+    )
+
+    print("\nPreclassification match-count distribution:")
+    print(
+        sim_recovery_df["n_pre_matches"]
+        .value_counts()
+        .sort_index()
+        .to_string()
+    )
+
+    print(
+        f"\nDistinct injections recovered: "
+        f"{sim_recovery_df['recovered_in_pre'].sum()}/"
+        f"{len(sim_recovery_df)}"
+    )
+
+    print(
+        f"Total pre_df rows matched to simulation boxes: "
+        f"{sim_recovery_df['n_pre_matches'].sum()}"
+    )
+
+    print(
+        f"Injections producing multiple detected peaks: "
+        f"{sim_recovery_df['multiple_pre_matches'].sum()}"
+    )
+
     print("Preclassification counts:")
     class_counts = pre_df["class"].value_counts(dropna=False)
     print(class_counts.to_dict())
@@ -1908,15 +2824,18 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     timestamp = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
     pre_df_name = _timestamped_name("cr_event_analysis_preclassifier.csv",timestamp,on_HPC)
     medians_name =_timestamped_name("cr_event_analysis_preclassifier_medians.npy",timestamp,on_HPC)
-    np.save(medians_name, frame_medians)
+    sim_recovery_name = _timestamped_name("cr_event_analysis_sim_recovery.csv", timestamp, on_HPC)
+    sim_recovery_df.to_csv(sim_recovery_name, index=False)
     pre_df.to_csv(pre_df_name, index=False)
+    np.save(medians_name, frame_medians)
     print(f"Pre-classification dataframe saved as {pre_df_name}, medians numpy array saved as {medians_name}")
-
+    print(f"Saved simulation recovery diagnostics to: {sim_recovery_name}")
 
     if add_sim_data and (sim_truth_df is not None) and save_sim_truth:
         sim_truth_csv_final = _timestamped_name(sim_truth_csv, timestamp, on_HPC)
         sim_truth_df.to_csv(sim_truth_csv_final, index=False)
-        print(f"Saved simulated-event truth table to: {sim_truth_csv_final}")
+        sim_metadata_df.to_csv(sim_processed_md_csv, index=False)
+        print(f"Saved simulated-event truth table to: {sim_truth_csv_final} and metadata to {sim_processed_md_csv}")
 
     # Early sanity check:
     # if likely_streak is too small, stop early
@@ -1942,7 +2861,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     if len(df_xrays):
         xray_cols = [
             "frame", "y", "x", "event_index", "class", "is_sim",
-            "peak_val", "r3", "r5", "n_secondary_5x5",
+            "peak_val", "r3", "r5", "sum5x5_bgsub_DN", "n_secondary_in_5x5",
         ]
         df_xrays = df_xrays[xray_cols]
 
@@ -1974,7 +2893,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
             "minor_extent_pix", "minor_extent_um",
             "aspect_ratio_blob", "orientation_deg_blob",
             "gini_blob", "supercell_gain",
-            "peak_val_pre", "r3_pre", "r5_pre", "n_secondary_5x5_pre",
+            "peak_val", "r3", "r5", "n_secondary_in_5x5",
         ])
         return df_streaks, pre_df
 
@@ -2070,10 +2989,10 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
             "event_index": int(idx),
             "class": pre_row["class"],
             "is_sim": pre_row["is_sim"],
-            "peak_val_pre": pre_row["peak_val"],
-            "r3_pre": pre_row["r3"],
-            "r5_pre": pre_row["r5"],
-            "n_secondary_5x5_pre": pre_row["n_secondary_5x5"],
+            "peak_val": pre_row["peak_val"],
+            "r3": pre_row["r3"],
+            "r5": pre_row["r5"],
+            "n_secondary_in_5x5": pre_row["n_secondary_in_5x5"],
         }
 
         if blob_label <= 0:
@@ -2128,6 +3047,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         final_rows.append(row)
 
     df_streaks = pd.DataFrame(final_rows)
+    df_streaks = add_derived_signal_columns(df_streaks)
 
     preferred_cols = [
         "frame", "y", "x", "event_index", "class",
@@ -2141,7 +3061,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         "minor_extent_pix", "minor_extent_um",
         "aspect_ratio_blob", "orientation_deg_blob",
         "gini_blob", "supercell_gain",
-        "peak_val_pre", "r3_pre", "r5_pre", "n_secondary_5x5_pre",
+        "peak_val", "r3", "r5", "sum5x5_bgsub_DN", "n_secondary_in_5x5",
     ]
 
     if len(df_streaks):
@@ -2180,11 +3100,27 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
             df_xrays.to_parquet(output_xray_parquet, index=False)
             print(f"Saved x-ray dataframe to Parquet: {output_xray_parquet}")
 
+
+    if make_plots:
+        plot_run_directory = generate_diagnostic_plots(
+            pre_df=pre_df,
+            df_streaks=df_streaks,
+            output_root=plot_output_dir,
+            timestamp=timestamp,
+            random_seed=sim_random_seed,
+            dpi=plot_dpi,
+        )
+
+        print(
+            f"Automatic diagnostic plots saved under: "
+            f"{plot_run_directory}"
+        )
+
     total_time = time.perf_counter() - start_time
     print(f"Total runtime: {total_time:.2f}s")
 
     if add_sim_data:
-        return data_cube, events, single_epoch_events, sim_data, sim_metadata, rng, sim_cutouts, sim_truth_df, pre_df, frame_medians, df_xrays, df_streaks
+        return data_cube, events, single_epoch_events, sim_data, sim_metadata_df, extraction_info, rng, sim_cutouts, sim_truth_df, pre_df, frame_medians, df_xrays, df_streaks
     else:
         return data_cube, events, single_epoch_events, pre_df, frame_medians, df_xrays, df_streaks
 

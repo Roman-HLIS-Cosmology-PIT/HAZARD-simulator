@@ -17,6 +17,7 @@
   
   "add_sim_data": true,
   "sim_data_path": "../Data/Sim/output_DN_array_29Apr2026.npy",
+  "sim_metadata_path": "../Data/Sim/202604291739_energy_loss.csv",
   "sim_threshold": 0.001,
   "sim_min_pixels": 3,
   "n_sim_injections": 55,
@@ -26,6 +27,7 @@
   "sim_frame_indices": [10, 20, 30, 40, 50],
   "save_sim_truth": true,
   "sim_truth_csv": "cr_event_analysis_sim_truth.csv",
+  "sim_processed_md_csv": "cr_event_analysis_processed_sim_md.csv",
 
   "badpix_veto_radius": 1,
 
