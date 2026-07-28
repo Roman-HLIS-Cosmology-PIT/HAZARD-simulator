@@ -1001,17 +1001,18 @@ def process_hit(
 ):
     frame, y, x, blob_label = hit.astype(int)
 
-    img = data_cube[frame].astype(np.int32)
+    img_raw = data_cube[frame].astype(np.float32, copy=False)
     med = medians[frame]
+    img_bgsub = img_raw - np.float32(med)
 
     sc_row = y // supercell_size
     sc_col = x // supercell_size
     sc_gain = gain_array[sc_row, sc_col]
 
-    sum3 = _clipped_box_sum(img, y, x, radius=1)
-    sum5 = _clipped_box_sum(img, y, x, radius=2)
+    sum3_bgsub_DN = _clipped_box_sum(img_bgsub, y, x, radius=1)
+    sum5_bgsub_DN = _clipped_box_sum(img_bgsub, y, x, radius=2)
 
-    sum_blob = int(blob_sums[frame][blob_label - 1])
+    sum_blob = float(blob_sums[frame][blob_label - 1])
     n_pix_blob = int(blob_counts[frame][blob_label - 1])
 
     major_blob_geom = float(blob_major_extent_geom[frame][blob_label - 1])
@@ -1028,10 +1029,10 @@ def process_hit(
         "y": y,
         "x": x,
         "median": med,
-        "sum3x3_DN": sum3,
-        "sum3x3_e": sum3 * sc_gain,
-        "sum5x5_DN": sum5,
-        "sum5x5_e": sum5 * sc_gain,
+        "sum3x3_bgsub_DN": sum3_bgsub_DN,
+        "sum3x3_bgsub_e": sum3_bgsub_DN * sc_gain,
+        "sum5x5_bgsub_DN": sum5_bgsub_DN,
+        "sum5x5_bgsub_e": sum5_bgsub_DN * sc_gain,
         "blob_label": blob_label,
         "blob_DN": sum_blob,
         "blob_e": sum_blob * sc_gain,
