@@ -2597,13 +2597,13 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     if len(all_events) == 0:
         print("No candidate peaks found.")
         empty_cols_streak = [
-            "frame", "y", "x", "event_index", "class", "is_sim",
+            "frame", "y", "x", "event_index", "class", "is_sim", "sim_PID", "sim_injection_id",
             "median", "sum3x3_DN", "sum3x3_e", "sum5x5_DN", "sum5x5_e",
             "blob_label", "blob_DN", "blob_e", "n_pix_blob",
         ]
 
         empty_cols_xray = [
-            "frame", "y", "x", "event_index", "class", "is_sim",
+            "frame", "y", "x", "event_index", "class", "is_sim", "sim_PID", "sim_injection_id",
             "median", "sum3x3_DN", "sum3x3_e", "sum5x5_DN", "sum5x5_e",
             "blob_label", "blob_DN", "blob_e", "n_pix_blob",
         ]
@@ -2860,7 +2860,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
 
     if len(df_xrays):
         xray_cols = [
-            "frame", "y", "x", "event_index", "class", "is_sim",
+            "frame", "y", "x", "event_index", "class", "is_sim", "sim_PID", "sim_injection_id",
             "peak_val", "r3", "r5", "sum5x5_bgsub_DN", "n_secondary_in_5x5",
         ]
         df_xrays = df_xrays[xray_cols]
@@ -2885,7 +2885,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     if len(streak_candidate_idx) == 0:
         print("No post-classification streak candidates found.")
         df_streaks = pd.DataFrame(columns=[
-            "frame", "y", "x", "event_index", "class", "is_sim",
+            "frame", "y", "x", "event_index", "class", "is_sim",  "sim_PID", "sim_injection_id",
             "median", "sum3x3_DN", "sum3x3_e", "sum5x5_DN", "sum5x5_e",
             "blob_label", "blob_DN", "blob_e", "n_pix_blob",
             "major_extent_geom", "minor_extent_geom",
@@ -2988,7 +2988,11 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         row_pre = {
             "event_index": int(idx),
             "class": pre_row["class"],
-            "is_sim": pre_row["is_sim"],
+            # Simulation identity inherited from pre_df
+            "is_sim": bool(pre_row["is_sim"]),
+            "sim_PID": int(pre_row["sim_PID"]),
+            "sim_injection_id": int(pre_row["sim_injection_id"]),
+
             "peak_val": pre_row["peak_val"],
             "r3": pre_row["r3"],
             "r5": pre_row["r5"],
@@ -3051,10 +3055,9 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
 
     preferred_cols = [
         "frame", "y", "x", "event_index", "class",
-        "is_sim", "median",
-        "sum3x3_DN", "sum3x3_e",
-        "sum5x5_DN", "sum5x5_e",
-        "blob_label",
+        "is_sim", "sim_PID", "sim_injection_id",
+        "median", "sum3x3_DN", "sum3x3_e",
+        "sum5x5_DN", "sum5x5_e", "blob_label",
         "blob_DN", "blob_e", "n_pix_blob",
         "major_extent_geom", "minor_extent_geom",
         "major_extent_pix", "major_extent_um",
