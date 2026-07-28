@@ -2391,7 +2391,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         if len(sim_cutouts) == 0:
             raise ValueError("No simulated events found above threshold in sim_data.")
 
-        if len(sim_metadata_df) == extraction_info['n_connected_components_raw']:
+        if len(sim_metadata_df) == extraction_info['n_cutouts_kept']:
             print("Number of found sim events matches supplied metadata.")
         else:
             print("Number of found sim events DOES NOT match supplied metadata. Verify supplied paths are correct.")
