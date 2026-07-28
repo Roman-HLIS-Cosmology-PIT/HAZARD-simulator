@@ -1848,8 +1848,8 @@ def add_is_sim_flag(detections_df, sim_truth_df, padding=2):
 
 def add_derived_signal_columns(df):
     """
-    Add reconstructed 5x5 background-subtracted signal columns when
-    the required peak and r5 columns are available.
+    Add reconstructed 3x3 and/or 5x5 background-subtracted signal columns when
+    the required peak and r3/r5 columns are available.
 
     The preclassifier defines:
 
@@ -1857,33 +1857,23 @@ def add_derived_signal_columns(df):
 
     so:
 
-        sum5x5 = peak * (1 + r5)
+        sum5x5 = peak * (1 + r5), same for r3 and sum3x3
     """
     out = df.copy()
 
     # Standard preclassification dataframe
-    if (
-        "sum5x5_bgsub_DN" not in out.columns
-        and {"peak_val", "r5"}.issubset(out.columns)
-    ):
-        out["sum5x5_bgsub_DN"] = (
+    if ("sum3x3_bgsub_DN" not in out.columns
+        and {"peak_val", "r3"}.issubset(out.columns)):
+        out["sum3x3_bgsub_DN"] = (
             pd.to_numeric(out["peak_val"], errors="coerce")
-            * (
-                1.0
-                + pd.to_numeric(out["r5"], errors="coerce")
-            )
+            * (1.0 + pd.to_numeric(out["r3"], errors="coerce"))
         )
 
-    if (
-        "sum5x5_bgsub_DN" not in out.columns
-        and {"peak_val", "r5"}.issubset(out.columns)
-    ):
+    if ("sum5x5_bgsub_DN" not in out.columns
+        and {"peak_val", "r5"}.issubset(out.columns)):
         out["sum5x5_bgsub_DN"] = (
             pd.to_numeric(out["peak_val"], errors="coerce")
-            * (
-                1.0
-                + pd.to_numeric(out["r5"], errors="coerce")
-            )
+            * (1.0 + pd.to_numeric(out["r5"], errors="coerce"))
         )
 
     return out
@@ -2387,12 +2377,13 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
             f"Sim array contains {extraction_info['n_connected_components_raw']} "
             f"connected objects above threshold; "
             f"{extraction_info['n_cutouts_kept']} passed min_pixels."
+            f"The 'sim_metadata_df' has {len(sim_metadata_df)} total elements."
         )
 
         if len(sim_cutouts) == 0:
             raise ValueError("No simulated events found above threshold in sim_data.")
 
-        if len(sim_metadata_df) == extraction_info['n_cutouts_kept']:
+        if len(sim_truth_df) == extraction_info['n_cutouts_kept']:
             print("Number of found sim events matches supplied metadata.")
         else:
             print("Number of found sim events DOES NOT match supplied metadata. Verify supplied paths are correct.")
@@ -2599,13 +2590,13 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         print("No candidate peaks found.")
         empty_cols_streak = [
             "frame", "y", "x", "event_index", "class", "is_sim", "sim_PID", "sim_injection_id",
-            "median", "sum3x3_DN", "sum3x3_e", "sum5x5_DN", "sum5x5_e",
+            "median", "sum3x3_bgsub_DN", "sum3x3_bgsub_e", "sum5x5_bgsub_DN", "sum5x5_bgsub_e",
             "blob_label", "blob_DN", "blob_e", "n_pix_blob",
         ]
 
         empty_cols_xray = [
             "frame", "y", "x", "event_index", "class", "is_sim", "sim_PID", "sim_injection_id",
-            "median", "sum3x3_DN", "sum3x3_e", "sum5x5_DN", "sum5x5_e",
+            "median", "sum3x3_bgsub_DN", "sum3x3_bgsub_e", "sum5x5_bgsub_DN", "sum5x5_bgsub_e",
             "blob_label", "blob_DN", "blob_e", "n_pix_blob",
         ]
         return pd.DataFrame(columns=empty_cols_streak), pd.DataFrame(columns=empty_cols_xray)
@@ -2718,13 +2709,14 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
                 "bbox_h_5x5": np.nan,
                 "bbox_w_5x5": np.nan,
             })
-    #create a "total_signal (background substracted)" column from peak and r5 values
+    
     pre_df = pd.DataFrame(pre_rows)
 
     if len(pre_df) == 0:
         print("Preclassification produced no rows.")
         return pd.DataFrame(), pd.DataFrame()
     
+    #create a "total_signal (background substracted)" column from peak and r5 values
     pre_df = add_derived_signal_columns(pre_df)
 
     # Assign simulation origin once at the preclassification stage.
@@ -2862,7 +2854,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     if len(df_xrays):
         xray_cols = [
             "frame", "y", "x", "event_index", "class", "is_sim", "sim_PID", "sim_injection_id",
-            "peak_val", "r3", "r5", "sum5x5_bgsub_DN", "n_secondary_in_5x5",
+            "peak_val", "r3", "r5", "sum3x3_bgsub_DN", "sum5x5_bgsub_DN", "n_secondary_in_5x5",
         ]
         df_xrays = df_xrays[xray_cols]
 
@@ -2887,7 +2879,7 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         print("No post-classification streak candidates found.")
         df_streaks = pd.DataFrame(columns=[
             "frame", "y", "x", "event_index", "class", "is_sim",  "sim_PID", "sim_injection_id",
-            "median", "sum3x3_DN", "sum3x3_e", "sum5x5_DN", "sum5x5_e",
+            "median", "sum3x3_bgsub_DN", "sum3x3_bgsub_e", "sum5x5_bgsub_DN", "sum5x5_bgsub_e",
             "blob_label", "blob_DN", "blob_e", "n_pix_blob",
             "major_extent_geom", "minor_extent_geom",
             "major_extent_pix", "major_extent_um",
@@ -3006,10 +2998,10 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
                 "y": int(y),
                 "x": int(x),
                 "median": frame_medians[frame],
-                "sum3x3_DN": np.nan,
-                "sum3x3_e": np.nan,
-                "sum5x5_DN": np.nan,
-                "sum5x5_e": np.nan,
+                "sum3x3_bgsub_DN": np.nan,
+                "sum3x3_bgsub_e": np.nan,
+                "sum5x5_bgsub_DN": np.nan,
+                "sum5x5_bgsub_e": np.nan,
                 "blob_label": 0,
                 "blob_DN": np.nan,
                 "blob_e": np.nan,
@@ -3057,15 +3049,15 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     preferred_cols = [
         "frame", "y", "x", "event_index", "class",
         "is_sim", "sim_PID", "sim_injection_id",
-        "median", "sum3x3_DN", "sum3x3_e",
-        "sum5x5_DN", "sum5x5_e", "blob_label",
+        "median", "sum3x3_bgsub_DN", "sum3x3_bgsub_e",
+        "sum5x5_bgsub_DN", "sum5x5_bgsub_e", "blob_label",
         "blob_DN", "blob_e", "n_pix_blob",
         "major_extent_geom", "minor_extent_geom",
         "major_extent_pix", "major_extent_um",
         "minor_extent_pix", "minor_extent_um",
         "aspect_ratio_blob", "orientation_deg_blob",
         "gini_blob", "supercell_gain",
-        "peak_val", "r3", "r5", "sum5x5_bgsub_DN", "n_secondary_in_5x5",
+        "peak_val", "r3", "r5", "n_secondary_in_5x5",
     ]
 
     if len(df_streaks):
