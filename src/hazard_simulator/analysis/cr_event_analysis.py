@@ -4,7 +4,7 @@
 # with technical advice by Christopher Hirata
 # Notes: Gaussian smoothing and edge detection idea
 # provided by Emily Koivu
-# version 0.15
+# version 0.16
 
 import os
 import time
@@ -892,7 +892,46 @@ def analyze_blobs_by_frame(
     minor_extent_pix = np.zeros(n_blobs, dtype=np.float32)
     aspect_ratios = np.zeros(n_blobs, dtype=np.float32)
     orientations = np.zeros(n_blobs, dtype=np.float32)
-    ginis = np.zeros(n_blobs, dtype=np.float32)
+    
+    #ginis = np.zeros(n_blobs, dtype=np.float32)
+    #new two Gini code below
+
+    gini_pixels = np.zeros(n_blobs, dtype=np.float32)
+
+    gini_longitudinal = np.full(
+        n_blobs,
+        np.nan,
+        dtype=np.float32,
+    )
+
+    longitudinal_peak_fraction = np.full(
+        n_blobs,
+        np.nan,
+        dtype=np.float32,
+    )
+
+    longitudinal_cv = np.full(
+        n_blobs,
+        np.nan,
+        dtype=np.float32,
+    )
+
+    longitudinal_end_asymmetry = np.full(
+        n_blobs,
+        np.nan,
+        dtype=np.float32,
+    )
+
+    longitudinal_peak_offset = np.full(
+        n_blobs,
+        np.nan,
+        dtype=np.float32,
+    )
+
+    n_longitudinal_bins = np.zeros(
+        n_blobs,
+        dtype=np.int32,
+    )
 
     blob_slices = find_objects(lab_img_roi)
 
@@ -937,7 +976,52 @@ def analyze_blobs_by_frame(
             aspect_ratios[blob_label - 1] = metrics["aspect_ratio"]
             orientations[blob_label - 1] = metrics["orientation_deg"]
 
-        ginis[blob_label - 1] = _gini_coefficient(blob_vals)
+        #ginis[blob_label - 1] = _gini_coefficient(blob_vals)
+        blob_index = blob_label - 1
+
+        # Existing pixel-value Gini.
+        gini_pixels[blob_index] = _gini_coefficient(blob_vals)
+
+        # Only interpret the longitudinal direction when the object has
+        # a sufficiently well-defined streak geometry.
+        has_stable_major_axis = (
+            np.isfinite(aspect_ratios[blob_index])
+            and np.isfinite(major_extent_pix[blob_index])
+            and aspect_ratios[blob_index] >= 1.4
+            and major_extent_pix[blob_index] >= 3.5
+        )
+
+        if has_stable_major_axis:
+            longitudinal = longitudinal_streak_metrics(
+                coords=blob_coords,
+                values=blob_vals_pos,
+                bin_width=1.0,
+                charge_weighted_axis=False,
+            )
+
+            gini_longitudinal[blob_index] = (
+                longitudinal["gini_longitudinal"]
+            )
+
+            longitudinal_peak_fraction[blob_index] = (
+                longitudinal["longitudinal_peak_fraction"]
+            )
+
+            longitudinal_cv[blob_index] = (
+                longitudinal["longitudinal_cv"]
+            )
+
+            longitudinal_end_asymmetry[blob_index] = (
+                longitudinal["longitudinal_end_asymmetry"]
+            )
+
+            longitudinal_peak_offset[blob_index] = (
+                longitudinal["longitudinal_peak_offset"]
+            )
+
+            n_longitudinal_bins[blob_index] = (
+                longitudinal["n_longitudinal_bins"]
+            )
 
     t_metrics_end = time.perf_counter()
 
@@ -978,7 +1062,14 @@ def analyze_blobs_by_frame(
         "minor_extent_pix": minor_extent_pix,
         "aspect_ratios": aspect_ratios,
         "orientations": orientations,
-        "ginis": ginis,
+        #"ginis": ginis,
+        "gini_pixels": gini_pixels,
+        "gini_longitudinal": gini_longitudinal,
+        "longitudinal_peak_fraction": longitudinal_peak_fraction,
+        "longitudinal_cv": longitudinal_cv,
+        "longitudinal_end_asymmetry": longitudinal_end_asymmetry,
+        "longitudinal_peak_offset": longitudinal_peak_offset,
+        "n_longitudinal_bins": n_longitudinal_bins,
         "hit_labels": hit_labels,
     }
 
@@ -997,55 +1088,98 @@ def process_hit(
     blob_minor_extent_pix,
     blob_aspect_ratios,
     blob_orientations,
-    blob_ginis,
+    gini_pixels_blob,
+    gini_longitudinal_blob,
+    longitudinal_peak_fraction,
+    longitudinal_cv,
+    longitudinal_end_asymmetry,
+    longitudinal_peak_offset,
+    n_longitudinal_bins,
 ):
+    """
+    Build one final-result row for a detected event with a valid blob label.
+
+    The blob-level metric dictionaries are indexed first by frame and
+    then by blob_label - 1.
+    """
     frame, y, x, blob_label = hit.astype(int)
 
-    img_raw = data_cube[frame].astype(np.float32, copy=False)
-    med = medians[frame]
+    img_raw = data_cube[frame].astype(
+        np.float32,
+        copy=False,
+    )
+
+    med = float(medians[frame])
     img_bgsub = img_raw - np.float32(med)
 
     sc_row = y // supercell_size
     sc_col = x // supercell_size
-    sc_gain = gain_array[sc_row, sc_col]
 
-    sum3_bgsub_DN = _clipped_box_sum(img_bgsub, y, x, radius=1)
-    sum5_bgsub_DN = _clipped_box_sum(img_bgsub, y, x, radius=2)
+    sc_gain = float(
+        gain_array[sc_row, sc_col]
+    )
 
-    sum_blob = float(blob_sums[frame][blob_label - 1])
-    n_pix_blob = int(blob_counts[frame][blob_label - 1])
+    sum3_bgsub_DN = float(
+        _clipped_box_sum(
+            img_bgsub,
+            y,
+            x,
+            radius=1,
+        )
+    )
 
-    major_blob_geom = float(blob_major_extent_geom[frame][blob_label - 1])
-    minor_blob_geom = float(blob_minor_extent_geom[frame][blob_label - 1])    
-    major_blob = float(blob_major_extent_pix[frame][blob_label - 1])
-    minor_blob = float(blob_minor_extent_pix[frame][blob_label - 1])
-    aspect_blob = float(blob_aspect_ratios[frame][blob_label - 1])
-    orient_blob = float(blob_orientations[frame][blob_label - 1])
+    sum5_bgsub_DN = float(
+        _clipped_box_sum(
+            img_bgsub,
+            y,
+            x,
+            radius=2,
+        )
+    )
 
-    gini_blob = float(blob_ginis[frame][blob_label - 1])
+    # Blob labels are numbered 1...N, while arrays are indexed 0...N-1.
+    blob_index = blob_label - 1
+
+    sum_blob = float(blob_sums[frame][blob_index])
+    n_pix_blob = int(blob_counts[frame][blob_index])
+    major_blob_geom = float(blob_major_extent_geom[frame][blob_index])
+    minor_blob_geom = float(blob_minor_extent_geom[frame][blob_index])
+    major_blob = float(blob_major_extent_pix[frame][blob_index])
+    minor_blob = float(blob_minor_extent_pix[frame][blob_index])
+    aspect_blob = float(blob_aspect_ratios[frame][blob_index])
+    orient_blob = float(blob_orientations[frame][blob_index])
+    gini_pixel = float(gini_pixels_blob[frame][blob_index])
+    gini_longitudinal = float(gini_longitudinal_blob[frame][blob_index])
+    longitudinal_peak_fraction = float(longitudinal_peak_fraction[frame][blob_index])
+    longitudinal_cv = float(longitudinal_cv[frame][blob_index])
+    longitudinal_end_asymmetry = float(longitudinal_end_asymmetry[frame][blob_index])
+    longitudinal_peak_offset = float(longitudinal_peak_offset[frame][blob_index])
+    n_longitudinal_bins = int(n_longitudinal_bins[frame][blob_index])
 
     return {
-        "frame": frame,
-        "y": y,
-        "x": x,
-        "median": med,
-        "sum3x3_bgsub_DN": sum3_bgsub_DN,
-        "sum3x3_bgsub_e": sum3_bgsub_DN * sc_gain,
-        "sum5x5_bgsub_DN": sum5_bgsub_DN,
-        "sum5x5_bgsub_e": sum5_bgsub_DN * sc_gain,
-        "blob_label": blob_label,
-        "blob_DN": sum_blob,
-        "blob_e": sum_blob * sc_gain,
-        "n_pix_blob": n_pix_blob,
-        "major_extent_geom": major_blob_geom,
-        "minor_extent_geom": minor_blob_geom,
-        "major_extent_pix": major_blob,
-        "major_extent_um": major_blob * 10.0,
-        "minor_extent_pix": minor_blob,
-        "minor_extent_um": minor_blob * 10.0,
-        "aspect_ratio_blob": aspect_blob,
-        "orientation_deg_blob": orient_blob,
-        "gini_blob": gini_blob,
+        "frame": frame, "y": y, "x": x, "median": med,
+        "sum3x3_bgsub_DN": sum3_bgsub_DN, "sum3x3_bgsub_e": sum3_bgsub_DN * sc_gain,
+        "sum5x5_bgsub_DN": sum5_bgsub_DN, "sum5x5_bgsub_e": sum5_bgsub_DN * sc_gain,
+        "blob_label": blob_label, "blob_DN": sum_blob,
+        "blob_e": sum_blob * sc_gain, "n_pix_blob": n_pix_blob,
+        "major_extent_geom": major_blob_geom, "minor_extent_geom": minor_blob_geom,
+        "major_extent_pix": major_blob, "major_extent_um": major_blob * 10.0,
+        "minor_extent_pix": minor_blob, "minor_extent_um": minor_blob * 10.0,
+        "aspect_ratio_blob": aspect_blob, "orientation_deg_blob": orient_blob,
+
+        # Backward-compatible alias
+        "gini_blob": gini_pixel,
+
+        # Explicit new Gini metrics.
+        "gini_pixel_blob": gini_pixel,
+        "gini_longitudinal_blob": gini_longitudinal,
+
+        # Other longitudinal-profile diagnostics.
+        "longitudinal_peak_fraction": longitudinal_peak_fraction,
+        "longitudinal_cv": longitudinal_cv,
+        "longitudinal_end_asymmetry": longitudinal_end_asymmetry,
+        "longitudinal_peak_offset": longitudinal_peak_offset,
+        "n_longitudinal_bins": n_longitudinal_bins,
         "supercell_gain": sc_gain,
     }
 
@@ -1086,9 +1220,12 @@ def _gini_coefficient(values):
 
     x = np.sort(x)
     n = x.size
+    if n < 2 or np.sum(x) <= 0:
+        return 0.0
+    
     index = np.arange(1, n + 1)
 
-    return (np.sum((2 * index - n - 1) * x)) / (n * np.sum(x))
+    return (np.sum((2 * index - n - 1) * x)) / ((n -1)* np.sum(x))
 
 
 def blob_pca_metrics(coords, weights=None):
@@ -1201,6 +1338,228 @@ def blob_pca_metrics(coords, weights=None):
         "aspect_ratio": aspect_ratio,
         "orientation_deg": orientation_deg,
     }
+
+
+def _principal_axis_basis(coords, weights=None):
+    """
+    Find the center and PCA major/minor axes for (y, x) coordinates.
+
+    Parameters
+    ----------
+    coords : (N, 2) array
+        Pixel coordinates in (y, x) order.
+    weights : (N,) array or None
+        Optional nonnegative PCA weights.
+
+    Returns
+    -------
+    center : (2,) ndarray
+        PCA center in (y, x).
+    major_axis : (2,) ndarray
+        Unit vector along the major axis.
+    minor_axis : (2,) ndarray
+        Unit vector along the minor axis.
+    """
+    coords = np.asarray(coords, dtype=np.float64)
+
+    if coords.ndim != 2 or coords.shape[1] != 2:
+        raise ValueError("coords must have shape (N, 2).")
+
+    if len(coords) < 2:
+        return (
+            coords.mean(axis=0) if len(coords) else np.zeros(2),
+            np.array([0.0, 1.0]),
+            np.array([1.0, 0.0]),
+        )
+
+    if weights is None:
+        center = coords.mean(axis=0)
+        centered = coords - center
+        covariance = centered.T @ centered / len(centered)
+
+    else:
+        weights = np.asarray(weights, dtype=np.float64)
+        weights = np.clip(weights, 0.0, None)
+
+        if weights.shape != (len(coords),):
+            raise ValueError(
+                "weights must contain one value per coordinate."
+            )
+
+        weight_sum = weights.sum()
+
+        if weight_sum <= 0:
+            center = coords.mean(axis=0)
+            centered = coords - center
+            covariance = centered.T @ centered / len(centered)
+
+        else:
+            center = np.sum(
+                coords * weights[:, None],
+                axis=0,
+            ) / weight_sum
+
+            centered = coords - center
+
+            covariance = (
+                centered.T
+                @ (centered * weights[:, None])
+                / weight_sum
+            )
+
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    order = np.argsort(eigenvalues)[::-1]
+
+    major_axis = eigenvectors[:, order[0]]
+    minor_axis = eigenvectors[:, order[1]]
+
+    return center, major_axis, minor_axis
+
+
+def longitudinal_streak_metrics(
+    coords,
+    values,
+    bin_width=1.0,
+    charge_weighted_axis=False,
+):
+    """
+    Collapse a 2D streak across its width and measure the resulting
+    1D charge profile along its PCA major axis.
+
+    Parameters
+    ----------
+    coords : (N, 2) array
+        Blob-pixel coordinates in (y, x) order.
+    values : (N,) array
+        Background-subtracted blob-pixel values.
+    bin_width : float
+        Longitudinal bin width in pixels.
+    charge_weighted_axis : bool
+        If True, use signal-weighted PCA to determine the axis.
+        If False, use the blob geometry alone.
+
+    Returns
+    -------
+    metrics : dict
+        Longitudinal profile and summary metrics.
+    """
+    coords = np.asarray(coords, dtype=np.float64)
+    charge = np.asarray(values, dtype=np.float64)
+
+    if coords.ndim != 2 or coords.shape[1] != 2:
+        raise ValueError("coords must have shape (N, 2).")
+
+    if charge.shape != (len(coords),):
+        raise ValueError(
+            "values must contain one entry per coordinate."
+        )
+
+    if bin_width <= 0:
+        raise ValueError("bin_width must be positive.")
+
+    valid = (
+        np.all(np.isfinite(coords), axis=1)
+        & np.isfinite(charge)
+    )
+
+    coords = coords[valid]
+    charge = np.clip(charge[valid], 0.0, None)
+
+    if len(coords) < 2 or charge.sum() <= 0:
+        return {
+            "gini_longitudinal": 0.0,
+            "longitudinal_peak_fraction": 1.0,
+            "longitudinal_cv": 0.0,
+            "longitudinal_end_asymmetry": 0.0,
+            "longitudinal_peak_offset": 0.0,
+            "n_longitudinal_bins": int(len(coords) > 0),
+            "longitudinal_profile": charge.copy(),
+        }
+
+    axis_weights = charge if charge_weighted_axis else None
+
+    center, major_axis, _ = _principal_axis_basis(
+        coords,
+        weights=axis_weights,
+    )
+
+    centered = coords - center
+
+    # Position of every pixel along the major axis, in pixel units.
+    longitudinal_position = centered @ major_axis
+
+    position_min = longitudinal_position.min()
+
+    bin_index = np.floor(
+        (longitudinal_position - position_min) / bin_width
+    ).astype(int)
+
+    n_bins = int(bin_index.max()) + 1
+
+    # Sum across the transverse direction within each longitudinal slice.
+    profile = np.bincount(
+        bin_index,
+        weights=charge,
+        minlength=n_bins,
+    ).astype(np.float64)
+
+    total_charge = profile.sum()
+
+    gini_longitudinal = _gini_coefficient(profile)
+
+    peak_bin = int(np.argmax(profile))
+
+    longitudinal_peak_fraction = (
+        profile[peak_bin] / total_charge
+    )
+
+    mean_profile = profile.mean()
+
+    longitudinal_cv = (
+        profile.std() / mean_profile
+        if mean_profile > 0
+        else 0.0
+    )
+
+    # Orientation-invariant displacement of the brightest bin:
+    # 0 means central; 1 means at either endpoint.
+    if n_bins > 1:
+        peak_fractional_position = peak_bin / (n_bins - 1)
+        longitudinal_peak_offset = (
+            2.0 * abs(peak_fractional_position - 0.5)
+        )
+    else:
+        longitudinal_peak_offset = 0.0
+
+    # Compare charge in the first and last quarters of the track.
+    n_end_bins = max(1, int(np.ceil(0.25 * n_bins)))
+
+    first_end_charge = profile[:n_end_bins].sum()
+    last_end_charge = profile[-n_end_bins:].sum()
+
+    longitudinal_end_asymmetry = (
+        abs(first_end_charge - last_end_charge)
+        / total_charge
+    )
+
+    return {
+        "gini_longitudinal": float(gini_longitudinal),
+        "longitudinal_peak_fraction": float(
+            longitudinal_peak_fraction
+        ),
+        "longitudinal_cv": float(longitudinal_cv),
+        "longitudinal_end_asymmetry": float(
+            longitudinal_end_asymmetry
+        ),
+        "longitudinal_peak_offset": float(
+            longitudinal_peak_offset
+        ),
+        "n_longitudinal_bins": int(n_bins),
+
+        # Useful for diagnostic plots; do not put the array into the CSV.
+        "longitudinal_profile": profile,
+    }
+
 
 def _timestamped_name(base_name, timestamp, on_hpc):
     name, ext = os.path.splitext(base_name)
@@ -1706,21 +2065,51 @@ def inject_sim_data(
             "primary_index": int(cut.get("primary_index", -1)),
 
             # Quality of the source cutout-to-metadata mapping
-            "metadata_overlap_pixels": int(
-                cut.get("metadata_overlap_pixels", 0)
-            ),
-            "metadata_overlap_weight": float(
-                cut.get("metadata_overlap_weight", 0.0)
-            ),
-            "metadata_match_fraction": float(
-                cut.get("metadata_match_fraction", 0.0)
-            ),
-            "n_parent_candidates": int(
-                cut.get("n_parent_candidates", 0)
-            ),
             "metadata_match_status": cut.get(
                 "metadata_match_status",
                 "unknown",
+            ),
+
+            "metadata_exact_bbox_match": bool(
+                cut.get(
+                    "metadata_exact_bbox_match",
+                    False,
+                )
+            ),
+
+            "metadata_bbox_overlap_pixels": int(
+                cut.get(
+                    "metadata_bbox_overlap_pixels",
+                    0,
+                )
+            ),
+
+            "metadata_bbox_iou": float(
+                cut.get(
+                    "metadata_bbox_iou",
+                    0.0,
+                )
+            ),
+
+            "metadata_cutout_overlap_fraction": float(
+                cut.get(
+                    "metadata_cutout_overlap_fraction",
+                    0.0,
+                )
+            ),
+
+            "metadata_center_distance_pix": float(
+                cut.get(
+                    "metadata_center_distance_pix",
+                    np.nan,
+                )
+            ),
+
+            "n_parent_candidates": int(
+                cut.get(
+                    "n_parent_candidates",
+                    0,
+                )
             ),
 
             # Injected position in the real FITS frame
@@ -2187,27 +2576,13 @@ def map_parent_pids_to_sim_cutouts(
     matched_mask = cutout_pid_map_df["parent_PID"] >= 0
     n_matched = int(matched_mask.sum())
 
-    duplicated_parent_mask = (
-        cutout_pid_map_df.loc[matched_mask, "parent_PID"]
-        .duplicated(keep=False)
-    )
+    duplicated_parent_mask = (cutout_pid_map_df.loc[matched_mask, "parent_PID"].duplicated(keep=False) )
+    duplicated_parent_ids = (cutout_pid_map_df.loc[matched_mask].loc[duplicated_parent_mask, "parent_PID"].unique() )
 
-    duplicated_parent_ids = (
-        cutout_pid_map_df.loc[matched_mask]
-        .loc[duplicated_parent_mask, "parent_PID"]
-        .unique()
-    )
-
-    print(
-        f"Mapped {n_matched}/{len(cutout_pid_map_df)} "
-        "sim cutouts to parent PIDs."
-    )
+    print(f"Mapped {n_matched}/{len(cutout_pid_map_df)} sim cutouts to parent PIDs.")
 
     if len(duplicated_parent_ids) > 0:
-        print(
-            "Warning: multiple cutouts were assigned to the same "
-            f"parent PID: {duplicated_parent_ids.tolist()}"
-        )
+        print(f"Warning: multiple cutouts were assigned to the same parent PID: {duplicated_parent_ids.tolist()}" )
 
     return mapped_cutouts, cutout_pid_map_df
 
@@ -2268,8 +2643,12 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         "sim_injection_border": 32,
         "sim_frame_indices": None,
         "save_sim_truth": True,
+        "save_sim_diagnostics": True,
         "sim_truth_csv": "cr_event_analysis_sim_truth.csv",
         "sim_processed_md_csv": "cr_event_analysis_processed_sim_md.csv",
+        "sim_cutout_pid_map_csv": "cr_event_analysis_sim_cutout_pid_map.csv",
+        "sim_recovery_csv": "cr_event_analysis_sim_recovery.csv",
+        "sim_diagnostics_json": "cr_event_analysis_sim_diagnostics.json",
         "sim_injection_border": 32,
         "sim_match_padding": 2,
         "sim_frame_indices": None,
@@ -2318,8 +2697,12 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     sim_injection_border = params.get("sim_injection_border", 32)
     sim_frame_indices = params.get("sim_frame_indices", None)
     save_sim_truth = params.get("save_sim_truth", True)
+    save_sim_diagnostics = params.get("save_sim_diagnostics", save_sim_truth)
     sim_truth_csv = params.get("sim_truth_csv", "cr_event_analysis_sim_truth.csv")
     sim_processed_md_csv = params.get("sim_processed_md_csv","cr_event_analysis_processed_sim_md.csv")
+    sim_cutout_pid_map_csv = params.get("sim_cutout_pid_map_csv","cr_event_analysis_sim_cutout_pid_map.csv")
+    sim_recovery_csv = params.get("sim_recovery_csv","cr_event_analysis_sim_recovery.csv")
+    sim_diagnostics_json = params.get("sim_diagnostics_json","cr_event_analysis_sim_diagnostics.json")
     sim_injection_border = params.get("sim_injection_border", 32)
     sim_match_padding = params.get("sim_match_padding", 2)
     sim_frame_indices = params.get("sim_frame_indices", None)
@@ -2346,6 +2729,14 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     #Load in sim data, if needed
     sim_truth_df = None
     sim_metadata_df = None
+    cutout_pid_map_df = None
+    sim_recovery_df = None
+
+    matches_before = {}
+    matches_after = {}
+
+    recovered_before_transient = []
+    recovered_after_transient = []
 
     if add_sim_data:
         if sim_data_path is None:
@@ -2383,10 +2774,6 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         if len(sim_cutouts) == 0:
             raise ValueError("No simulated events found above threshold in sim_data.")
 
-        if len(sim_truth_df) == extraction_info['n_cutouts_kept']:
-            print("Number of found sim events matches supplied metadata.")
-        else:
-            print("Number of found sim events DOES NOT match supplied metadata. Verify supplied paths are correct.")
 
         sim_cutouts, cutout_pid_map_df = map_parent_pids_to_sim_cutouts(
             sim_cutouts=sim_cutouts,
@@ -2403,6 +2790,12 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
             allow_reuse=sim_allow_reuse,
             border=sim_injection_border,
         )
+
+        if len(sim_truth_df) == extraction_info['n_cutouts_kept']:
+            print("Number of found sim events matches supplied metadata.")
+        else:
+            print("Number of found sim events DOES NOT match supplied metadata. Verify supplied paths are correct.")
+
 
         print(f"Injected {len(sim_truth_df)} simulated events into the FITS cube"
               f" from {extraction_info['n_cutouts_kept']} available such events")
@@ -2760,7 +3153,11 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
 
 
     pre_match_df = (
-        pd.Series(pre_match_counts, name="n_pre_matches")
+        pd.Series(
+            pre_match_counts,
+            name="n_pre_matches",
+            dtype=np.int64,
+        )
         .rename_axis("injection_id")
         .reset_index()
     )
@@ -2772,16 +3169,67 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         validate="one_to_one",
     )
 
+    # Detection counts at each stage
+    sim_recovery_df["n_peak_matches_before_transient"] = (
+        sim_recovery_df["injection_id"]
+        .map(matches_before)
+        .fillna(0)
+        .astype(int)
+    )
+    sim_recovery_df["n_peak_matches_after_transient"] = (
+        sim_recovery_df["injection_id"]
+        .map(matches_after)
+        .fillna(0)
+        .astype(int)
+    )
     sim_recovery_df["n_pre_matches"] = (
         sim_recovery_df["n_pre_matches"]
         .fillna(0)
         .astype(int)
     )
 
+    # Boolean recovery flags
+    sim_recovery_df["recovered_after_peak_finding"] = (
+        sim_recovery_df[
+            "n_peak_matches_before_transient"
+        ] > 0
+    )
+    sim_recovery_df["recovered_after_transient"] = (
+        sim_recovery_df[
+            "n_peak_matches_after_transient"
+        ] > 0
+    )
     sim_recovery_df["recovered_in_pre"] = (
         sim_recovery_df["n_pre_matches"] > 0
     )
 
+    # Diagnostics for event loss or duplication
+    sim_recovery_df["n_matches_removed_by_transient"] = (
+        sim_recovery_df[
+            "n_peak_matches_before_transient"
+        ]
+        - sim_recovery_df[
+            "n_peak_matches_after_transient"
+        ]
+    )
+    sim_recovery_df["lost_during_transient_filter"] = (
+        sim_recovery_df[
+            "recovered_after_peak_finding"
+        ]
+        & ~sim_recovery_df[
+            "recovered_after_transient"
+        ]
+    )
+    sim_recovery_df["multiple_matches_before_transient"] = (
+        sim_recovery_df[
+            "n_peak_matches_before_transient"
+        ] > 1
+    )
+    sim_recovery_df["multiple_matches_after_transient"] = (
+        sim_recovery_df[
+            "n_peak_matches_after_transient"
+        ] > 1
+    )
     sim_recovery_df["multiple_pre_matches"] = (
         sim_recovery_df["n_pre_matches"] > 1
     )
@@ -2824,11 +3272,138 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     print(f"Pre-classification dataframe saved as {pre_df_name}, medians numpy array saved as {medians_name}")
     print(f"Saved simulation recovery diagnostics to: {sim_recovery_name}")
 
-    if add_sim_data and (sim_truth_df is not None) and save_sim_truth:
-        sim_truth_csv_final = _timestamped_name(sim_truth_csv, timestamp, on_HPC)
-        sim_truth_df.to_csv(sim_truth_csv_final, index=False)
-        sim_metadata_df.to_csv(sim_processed_md_csv, index=False)
-        print(f"Saved simulated-event truth table to: {sim_truth_csv_final} and metadata to {sim_processed_md_csv}")
+    if add_sim_data and sim_truth_df is not None:
+        sim_truth_csv_final = _timestamped_name(sim_truth_csv,timestamp,on_HPC)
+        sim_processed_md_csv_final = _timestamped_name(sim_processed_md_csv,timestamp,on_HPC)
+        sim_cutout_pid_map_csv_final = _timestamped_name(sim_cutout_pid_map_csv,timestamp,on_HPC)
+        sim_recovery_csv_final = _timestamped_name(sim_recovery_csv,timestamp,on_HPC)
+        sim_diagnostics_json_final = _timestamped_name(sim_diagnostics_json,timestamp,on_HPC)
+
+        if save_sim_truth:
+            sim_truth_df.to_csv(sim_truth_csv_final,index=False)
+            sim_metadata_df.to_csv(sim_processed_md_csv_final,index=False)
+
+            print("Saved simulated-event truth table to: " f"{sim_truth_csv_final}")
+            print("Saved processed simulation metadata to: " f"{sim_processed_md_csv_final}")
+
+        if save_sim_diagnostics:
+            if cutout_pid_map_df is not None:
+                cutout_pid_map_df.to_csv(sim_cutout_pid_map_csv_final,index=False)
+                print("Saved cutout-to-PID mapping diagnostics to: "f"{sim_cutout_pid_map_csv_final}")
+
+            if sim_recovery_df is not None:
+                sim_recovery_df.to_csv(sim_recovery_csv_final,index=False)
+                print("Saved injection-recovery diagnostics to: "f"{sim_recovery_csv_final}")
+
+            diagnostic_summary = {
+            "timestamp_utc": timestamp,
+            "on_HPC": bool(on_HPC),
+            "slurm_job_id": (
+                os.environ.get("SLURM_JOB_ID")
+                if on_HPC
+                else None
+            ),
+
+            "sim_data_path": str(sim_data_path),
+            "sim_metadata_path": str(
+                sim_metadata_path
+            ),
+
+            "sim_random_seed": int(
+                sim_random_seed
+            ),
+
+            "sim_threshold": float(
+                sim_threshold
+            ),
+
+            "sim_min_pixels": int(
+                sim_min_pixels
+            ),
+
+            "sim_match_padding": int(
+                sim_match_padding
+            ),
+
+            "transient_verification": (
+                transient_verification
+            ),
+
+            "n_sim_components_raw": int(
+                extraction_info[
+                    "n_connected_components_raw"
+                ]
+            ),
+
+            "n_sim_cutouts_kept": int(
+                extraction_info[
+                    "n_cutouts_kept"
+                ]
+            ),
+
+            "n_sim_injections": int(
+                len(sim_truth_df)
+            ),
+
+            "n_cutouts_mapped_to_pid": int(
+                (
+                    cutout_pid_map_df["parent_PID"] >= 0
+                ).sum()
+            ),
+
+            "n_recovered_after_peak_finding": int(
+                sim_recovery_df[
+                    "recovered_after_peak_finding"
+                ].sum()
+            ),
+
+            "n_recovered_after_transient": int(
+                sim_recovery_df[
+                    "recovered_after_transient"
+                ].sum()
+            ),
+
+            "n_recovered_in_pre": int(
+                sim_recovery_df[
+                    "recovered_in_pre"
+                ].sum()
+            ),
+
+            "n_lost_during_transient_filter": int(
+                sim_recovery_df[
+                    "lost_during_transient_filter"
+                ].sum()
+            ),
+
+            "output_files": {
+                "sim_truth": sim_truth_csv_final,
+                "sim_metadata": (
+                    sim_processed_md_csv_final
+                ),
+                "cutout_pid_map": (
+                    sim_cutout_pid_map_csv_final
+                ),
+                "sim_recovery": (
+                    sim_recovery_csv_final
+                ),
+            },
+        }
+
+        with open(
+            sim_diagnostics_json_final,
+            "w",
+            encoding="utf-8",
+        ) as file:
+            json.dump(
+                diagnostic_summary,
+                file,
+                indent=2,
+            )
+
+        print(
+            "Saved simulation diagnostic summary to: "
+            f"{sim_diagnostics_json_final}"
+        )
 
     # Early sanity check:
     # if likely_streak is too small, stop early
@@ -2885,7 +3460,10 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
             "major_extent_pix", "major_extent_um",
             "minor_extent_pix", "minor_extent_um",
             "aspect_ratio_blob", "orientation_deg_blob",
-            "gini_blob", "supercell_gain",
+            "gini_blob", "gini_pixel_blob", "gini_longitudinal_blob",
+            "longitudinal_peak_fraction", "longitudinal_cv",
+            "longitudinal_end_asymmetry", "longitudinal_peak_offset",
+            "n_longitudinal_bins","supercell_gain",
             "peak_val", "r3", "r5", "n_secondary_in_5x5",
         ])
         return df_streaks, pre_df
@@ -2941,7 +3519,17 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
     blob_orientations = {}
     blob_major_extent_geom = {}
     blob_minor_extent_geom = {}
-    blob_ginis = {}
+    #blob_ginis = {}
+
+
+    gini_pixels_blob = {}
+    gini_longitudinal_blob = {}
+    longitudinal_peak_fraction = {}
+    longitudinal_cv = {}
+    longitudinal_end_asymmetry = {}
+    longitudinal_peak_offset = {}
+    n_longitudinal_bins = {}
+
     hit_blob_label = np.zeros(len(single_epoch_events), dtype=int)
 
     for out in blob_results:
@@ -2956,7 +3544,14 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         blob_orientations[f] = out["orientations"]
         blob_major_extent_geom[f] = out["major_extent_geom"]
         blob_minor_extent_geom[f] = out["minor_extent_geom"]
-        blob_ginis[f] = out["ginis"]
+        #blob_ginis[f] = out["ginis"]
+        gini_pixels_blob[f] = out["gini_pixels"]
+        gini_longitudinal_blob[f] = out["gini_longitudinal"]
+        longitudinal_peak_fraction[f] = out["longitudinal_peak_fraction"]
+        longitudinal_cv[f] = out["longitudinal_cv"]
+        longitudinal_end_asymmetry[f] = out["longitudinal_end_asymmetry"]
+        longitudinal_peak_offset[f] = out["longitudinal_peak_offset"]
+        n_longitudinal_bins[f] = out["n_longitudinal_bins"]
 
         hit_blob_label[idxs] = out["hit_labels"]
 
@@ -3014,7 +3609,16 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
                 "minor_extent_um": np.nan,
                 "aspect_ratio_blob": np.nan,
                 "orientation_deg_blob": np.nan,
+
                 "gini_blob": np.nan,
+                "gini_pixel_blob": np.nan,
+                "gini_longitudinal_blob": np.nan,
+                "longitudinal_peak_fraction": np.nan,
+                "longitudinal_cv": np.nan,
+                "longitudinal_end_asymmetry": np.nan,
+                "longitudinal_peak_offset": np.nan,
+                "n_longitudinal_bins": np.nan,
+
                 "supercell_gain": np.nan,
             }
             row.update(row_pre)
@@ -3037,7 +3641,15 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
             blob_minor_extent_pix=blob_minor_extent_pix,
             blob_aspect_ratios=blob_aspect_ratios,
             blob_orientations=blob_orientations,
-            blob_ginis=blob_ginis,
+
+            #blob_ginis=blob_ginis,
+            gini_pixels_blob=gini_pixels_blob,
+            gini_longitudinal_blob=gini_longitudinal_blob,
+            longitudinal_peak_fraction=longitudinal_peak_fraction,
+            longitudinal_cv=longitudinal_cv,
+            longitudinal_end_asymmetry=longitudinal_end_asymmetry,
+            longitudinal_peak_offset=longitudinal_peak_offset,
+            n_longitudinal_bins=n_longitudinal_bins,
         )
 
         row.update(row_pre)
@@ -3056,7 +3668,10 @@ def cr_analysis(fits_path, gain_path, params, badpix_mask = None):
         "major_extent_pix", "major_extent_um",
         "minor_extent_pix", "minor_extent_um",
         "aspect_ratio_blob", "orientation_deg_blob",
-        "gini_blob", "supercell_gain",
+        "gini_blob", "gini_pixel_blob", "gini_longitudinal_blob",
+        "longitudinal_peak_fraction", "longitudinal_cv",
+        "longitudinal_end_asymmetry", "longitudinal_peak_offset",
+        "n_longitudinal_bins","supercell_gain",
         "peak_val", "r3", "r5", "n_secondary_in_5x5",
     ]
 
@@ -3145,6 +3760,11 @@ if __name__ == "__main__":
     else:
         params = {}
 
+    # Welcome msg
+    start_time_string = time.strftime("%B %d, %Y at %I:%M:%S %p", time.localtime() )
+    print("-... . --. .. -.")
+    print(f"Cosmic ray event analysis started on {start_time_string}. Please wait.")
+
     # Load badpix mask if provided
     badpix_mask = None
     if args.badpix_mask is not None:
@@ -3152,5 +3772,7 @@ if __name__ == "__main__":
         badpix_mask = np.load(args.badpix_mask)
 
     results = cr_analysis(args.fits_path, args.gain_path, params, badpix_mask=badpix_mask)
-
-    print("Cosmic ray analysis complete.")
+    # Final msg
+    end_time_string = time.strftime("%B %d, %Y at %I:%M:%S %p", time.localtime() )
+    print(f"Cosmic ray event analysis completed on {end_time_string}. Thank you for your patience.")
+    print(". -. -..")
