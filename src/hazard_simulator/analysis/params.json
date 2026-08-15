@@ -1,0 +1,37 @@
+{
+  "on_HPC": false,
+
+  "channel_size": 32,
+  "supercell_size": 128,
+
+  "sigma_cutoff": 12,
+  "sat_cut": 5.999,
+  "sigma_thresh": 5.0,
+
+  "gaussian_sigma": 0.7,
+  "edge_thresh": 30.0,
+
+  "save_dataframe": true,
+  "output_csv": "cr_event_analysis_results.csv",
+  "output_parquet": null,
+  
+  "add_sim_data": true,
+  "sim_data_path": "../Data/Sim/output_DN_array_27Jul2026.npy",
+  "sim_metadata_path": "../Data/Sim/202607271959_energy_loss.csv",
+  "sim_threshold": 0.001,
+  "sim_min_pixels": 3,
+  "n_sim_injections": 1928,
+  "sim_random_seed": 42,
+  "sim_allow_reuse": false,
+  "sim_injection_border": 32,
+  "sim_frame_indices": [10, 20, 30, 40, 50],
+  "save_sim_truth": true,
+  "sim_truth_csv": "cr_event_analysis_sim_truth.csv",
+  "sim_processed_md_csv": "cr_event_analysis_processed_sim_md.csv",
+
+  "badpix_veto_radius": 1,
+
+  "make_plots": true,
+  "plot_output_dir": "cr_event_analysis_plots",
+  "plot_dpi": 300
+}
