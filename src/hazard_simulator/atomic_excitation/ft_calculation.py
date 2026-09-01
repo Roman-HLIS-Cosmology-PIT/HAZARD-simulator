@@ -2,10 +2,11 @@
 import numpy as np
 import scipy as sp
 
-#arbitrary values
-ne = 1e28          # electron density, m^-3
-quality = 10       # Q-factor
+# arbitrary values
+ne = 1e28  # electron density, m^-3
+quality = 10  # Q-factor
 omega_naught = 1e6
+
 
 def simple_material(ne, quality, omega_naught):
     """Calculate the electrical susceptibility of detector material
@@ -17,47 +18,49 @@ def simple_material(ne, quality, omega_naught):
         omega naught/ gamma, scaling "Q-factor" of the material.
     omega_naught: float
         The initial angular frequency of the excitation.
-     
+
     Returns:
     --------
     dict
         The electric susceptibility of the material.
     """
-    me = 9.10938356e-31 # kg   
-    qe = 1.602176634e-19 # C
-    epsilon_0 = 8.854187817e-12 # F/m
-    gamma = omega_naught/ quality
-    E_min = 0.5 #eV
-    E_max = 3 #eV, ballpark, will replace max energy with 2.48 eV (half a micron converted into eV), go up to a keV
-    h_bar = 6.582119569e-16 # eV*s
+    me = 9.10938356e-31  # kg
+    qe = 1.602176634e-19  # C
+    epsilon_0 = 8.854187817e-12  # F/m
+    gamma = omega_naught / quality
+    E_min = 0.5  # eV
+    E_max = 3  # eV, ballpark, will replace max energy with 2.48 eV
+    # (half a micron converted into eV), go up to a keV
+    h_bar = 6.582119569e-16  # eV*s
     omega_min = E_min / h_bar
     omega_max = E_max / h_bar
-    
+
     t_array = np.logspace(omega_min, omega_max)
-    q_array = np.logspace(1,10)
+    q_array = np.logspace(1, 10)
 
     q_grid, t_grid = np.meshgrid(q_array, t_array)
 
     omega_grid = t_grid / h_bar
 
-    x = (1/(omega_naught**2 - (1j*gamma*omega_grid) - omega_grid**2))*(qe/me) ## move this later because x is dependent on other values
-    chi_e = (ne*qe*x)/ epsilon_0
-    # q_array = np.logspace(omega_min, omega_max) #unit conversions, conversting lattice separations into momenta, 1-1000 for bounds
+    x = (1 / (omega_naught**2 - (1j * gamma * omega_grid) - omega_grid**2)) * (
+        qe / me
+    )  ## move this later because x is dependent on other values
+    chi_e = (ne * qe * x) / epsilon_0
+    # q_array = np.logspace(omega_min, omega_max)
+    # unit conversions, conversting lattice separations into momenta, 1-1000 for bounds
 
-    chi_dict = {
-        "CHI_E": chi_e,
-        "Q_ARRAY": q_array,
-        "T_ARRAY": t_array
-    }
+    chi_dict = {"CHI_E": chi_e, "Q_ARRAY": q_array, "T_ARRAY": t_array}
     return chi_dict
+
 
 sample_material = simple_material(ne, quality, omega_naught)
 print(len(sample_material["T_ARRAY"]))
 
 
-material = simple_material (ne, quality, omega_naught)
+material = simple_material(ne, quality, omega_naught)
 
-def ft_calculation(c, beta, material):  
+
+def ft_calculation(chi_t, chi_l, c, beta, t):
     """Calculate the rate of energy deposition events as a charged particle moves through the detector.
     Parameters:
     ---------
