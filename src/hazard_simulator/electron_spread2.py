@@ -684,6 +684,7 @@ def process_electrons_to_DN_by_blob(
     detector_dtype=np.float32,
     n_workers=None,
     chunk_size=64,
+    one_explicit=False,
 ):
     """
     Convert deposited electron events into a detector DN (Digital Number) map
@@ -740,6 +741,9 @@ def process_electrons_to_DN_by_blob(
         If ``None``, uses ``(os.cpu_count() - 1)`` (minimum 1).
     chunk_size : int, default=64
         Number of PIDs grouped into each processing chunk to reduce multiprocessing overhead.
+    one_explicit : bool, optional
+        If True, extracts one process from the loop and does it separately for coverage tracking.
+        Leave off for normal usage.
 
     Returns
     -------
@@ -813,6 +817,7 @@ def process_electrons_to_DN_by_blob(
     chunks = [pid_items[i : i + chunk_size] for i in range(0, len(pid_items), chunk_size)]
 
     # --- parallel map: workers return blocks; parent accumulates => no collisions ---
+    _chunks = chunks[:-1] if one_explicit else chunks
     with ProcessPoolExecutor(max_workers=n_workers) as ex:
         futures = [
             ex.submit(
@@ -827,7 +832,7 @@ def process_electrons_to_DN_by_blob(
                 n_pixels,
                 pixel_size_micron,
             )
-            for chunk in chunks
+            for chunk in _chunks
         ]
 
         for fut in tqdm(
@@ -837,6 +842,23 @@ def process_electrons_to_DN_by_blob(
             for y0, x0, block in blocks:
                 h, w = block.shape
                 H_detector[y0 : y0 + h, x0 : x0 + w] += block
+
+    # if one_explicit is set, do the last one separately
+    if one_explicit:
+        blocks = _process_pid_chunk(
+            chunks[-1],
+            kernel,
+            kernel_size_hi,
+            r,
+            hi_res_grid_spacing_micron,
+            sigma_micron,
+            N_sigma,
+            n_pixels,
+            pixel_size_micron,
+        )
+        for y0, x0, block in blocks:
+            h, w = block.shape
+            H_detector[y0 : y0 + h, x0 : x0 + w] += block
 
     # --- rest of your function unchanged (gain + save) ---
     if not apply_gain:
