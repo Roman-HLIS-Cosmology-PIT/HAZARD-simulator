@@ -362,93 +362,7 @@ class CosmicRaySimulation:
     """
 
     # Class-level lists for species (charge and mass)
-    Z_list = [
-        -1,
-        1,
-        2,
-        3,
-        4,
-        5,
-        6,
-        7,
-        8,
-        9,
-        10,
-        11,
-        12,
-        13,
-        14,
-        15,
-        16,
-        17,
-        18,
-        19,
-        20,
-        21,
-        22,
-        23,
-        24,
-        25,
-        26,
-        27,
-        28,
-        29,
-        30,
-        31,
-        32,
-        33,
-        34,
-        35,
-        36,
-        37,
-        38,
-        39,
-        41,
-        42,
-        43,
-        44,
-        45,
-        46,
-        47,
-        48,
-        49,
-        50,
-        51,
-        52,
-        53,
-        54,
-        55,
-        56,
-        57,
-        58,
-        59,
-        60,
-        61,
-        62,
-        63,
-        64,
-        65,
-        66,
-        67,
-        68,
-        69,
-        70,
-        71,
-        72,
-        73,
-        74,
-        75,
-        76,
-        77,
-        78,
-        79,
-        80,
-        81,
-        82,
-        83,
-        90,
-        92,
-    ]  # Omitting z=84-89 and z = 91 due to short half-lives
+    Z_list = [-1] + list(range(1, 84)) + [90, 92]  # Omitting z=84-89 and z = 91 due to short half-lives
     m_list = [
         5.109989461e5,
         0.9382720813e9,
@@ -1095,6 +1009,7 @@ class CosmicRaySimulation:
         pad_pixels: int = 4,
         pad_mode: str = "constant",
         pad_value: int | float = 0,
+        rng=None,
     ):
         """
         Initialize a cosmic-ray simulation on a pixelated detector.
@@ -1142,6 +1057,8 @@ class CosmicRaySimulation:
             Padding mode (passed to ``numpy.pad``), e.g., ``"constant"`` or ``"edge"``.
         pad_value : int or float, default=0
             Constant value to use when ``pad_mode="constant"``.
+        rng : np.random.RandomState or np.random.PCG64 or similar, optional
+            The random number generator to use.
 
         Notes
         -----
@@ -1212,6 +1129,9 @@ class CosmicRaySimulation:
         # Will hold the per-energy-bin ISO table for this species
         # Columns: Start/End/Bin Center/Bin Width/Mean # of particles
         self.num_part_table = None
+
+        # random number generator
+        self.rng = rng if rng is not None else np.random
 
     @classmethod
     def run_full_sim(
@@ -1441,13 +1361,12 @@ class CosmicRaySimulation:
         # Return the parent's PID in bit format.
         return parent_encoded
 
-    @staticmethod
-    def generate_angles(init_en, mass):
+    def generate_angles(self, init_en, mass):
         """Generate emission angles and velocity for a given initial energy and mass."""
         vel = np.sqrt((2 * init_en) / mass)
-        P = np.random.uniform(0, 1)
+        P = self.rng.uniform(0, 1)
         theta = np.arcsin(np.sqrt(P))
-        phi = np.random.uniform(0, 2 * np.pi)
+        phi = self.rng.uniform(0, 2 * np.pi)
         return theta, phi, vel  # unitless, unitless, m/s
 
     @staticmethod
@@ -2367,7 +2286,7 @@ class CosmicRaySimulation:
                 (13.6 / (beta_val1 * current_energy)) * np.sqrt(s_cm / X0) * (1 + 0.038 * np.log(s_cm / X0))
             )
             theta0_values.append(theta0)  # unitless
-            delta_theta = np.random.normal(
+            delta_theta = self.rng.normal(
                 0, theta0, size=2
             )  # generate 2D Gaussian on both transverse axes, unitless
             R = np.array(
@@ -2519,17 +2438,17 @@ class CosmicRaySimulation:
                 if delta_N > 0:
                     if delta_N < 1:
                         # Bernoulli trial: produce 1 delta ray with probability delta_N
-                        n_delta = 1 if np.random.uniform(0, 1) < delta_N else 0
+                        n_delta = 1 if self.rng.uniform(0, 1) < delta_N else 0
                     else:
                         # Poisson-draw number of delta rays when mean is >= 1
-                        n_delta = np.random.poisson(delta_N)
+                        n_delta = self.rng.poisson(delta_N)
                 else:
                     n_delta = 0
 
                 for _ in range(n_delta):
                     accepted = False
                     while not accepted:
-                        x_inv = np.random.uniform(1 / T_max_val, 1 / T_min)
+                        x_inv = self.rng.uniform(1 / T_max_val, 1 / T_min)
                         T_candidate = 1 / x_inv
                         accepted = True
                     T_delta = T_candidate  # MeV
@@ -2538,7 +2457,7 @@ class CosmicRaySimulation:
                         current_energy = 0
                         break
                     theta_delta = np.arccos(np.sqrt(T_delta / T_max_val))
-                    phi_delta = 2 * np.pi * np.random.uniform(0, 1)
+                    phi_delta = 2 * np.pi * self.rng.uniform(0, 1)
                     theta_global, phi_global = self.transform_angles(theta, phi, theta_delta, phi_delta)
                     delta_ray_PID = CosmicRaySimulation.encode_pid(
                         self.species_index, primary_idx, delta_ray_counter
@@ -2569,8 +2488,8 @@ class CosmicRaySimulation:
                     * (1 + 0.038 * np.log(s_cm / self.X0))
                 )
                 theta0_values.append(theta0)
-                delta_theta = np.random.normal(0, theta0)
-                delta_phi = np.random.uniform(0, 2 * np.pi)
+                delta_theta = self.rng.normal(0, theta0)
+                delta_phi = self.rng.uniform(0, 2 * np.pi)
                 vx = np.sin(theta) * np.cos(phi)
                 vy = np.sin(theta) * np.sin(phi)
                 vz = np.cos(theta)
@@ -2745,7 +2664,7 @@ class CosmicRaySimulation:
             lambda_value = num_part_table["Mean # of particles"].iat[j]
             if lambda_value <= 0 or not np.isfinite(lambda_value):
                 continue
-            poisson_samples = np.random.poisson(lambda_value, 1)
+            poisson_samples = self.rng.poisson(lambda_value, 1)
             count = int(poisson_samples.sum())
             primary_gcr_count += count
             if count == 0:
@@ -2755,9 +2674,9 @@ class CosmicRaySimulation:
             E_max = num_part_table["End Energy (eV/nuc)"].iat[j]  # eV/nucleon
             streaks = []
             for _ in range(count):
-                x = np.random.randint(0, num_pixels)
-                y = np.random.randint(0, num_pixels)
-                init_en = np.random.uniform(
+                x = self.rng.randint(0, num_pixels)
+                y = self.rng.randint(0, num_pixels)
+                init_en = self.rng.uniform(
                     E_min, E_max
                 )  # in eV/nucleon, should I multiply through by A_list to make it eV?
                 theta, phi, vel = self.generate_angles(init_en, self.m_list[idx])

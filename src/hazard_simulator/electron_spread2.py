@@ -1,6 +1,7 @@
 # electron_spread.py
 
 import argparse
+import multiprocessing
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -278,7 +279,7 @@ def gaussian_sum_kernel(size, sigma_um, grid_spacing_um=1.0, w_list=None, c_list
     return kernel
 
 
-def spread_electrons_to_patch(array, x_idx, y_idx, n_electrons, kernel):
+def spread_electrons_to_patch(array, x_idx, y_idx, n_electrons, kernel, rng=None):
     """Spread electrons into an array patch using a multinomial distribution."""
     size = kernel.shape[0]
     offset = size // 2
@@ -298,7 +299,8 @@ def spread_electrons_to_patch(array, x_idx, y_idx, n_electrons, kernel):
     patch_kernel = np.maximum(patch_kernel, 0)
     patch_kernel /= patch_kernel.sum() if patch_kernel.sum() > 0 else 1
 
-    draws = np.random.default_rng().multinomial(n_electrons, patch_kernel.ravel())
+    rng = rng if rng is not None else np.random.default_rng()  # recommend giving a real rng
+    draws = rng.multinomial(n_electrons, patch_kernel.ravel())
     # Iterate over patch grid positions (row-major)
     h, w = patch_kernel.shape
     coords = ((i, j) for i in range(h) for j in range(w))
@@ -320,6 +322,7 @@ def process_electrons_to_DN(
     N_sigma=6,
     output_array_path=None,
     apply_gain=True,
+    rng=None,
 ):
     """
     Convert simulated charge deposition events (CSV) to a detector-scale image.
@@ -356,7 +359,7 @@ def process_electrons_to_DN(
                 half_patch = kernel_size_hi // 2
 
                 patch = np.zeros((kernel_size_hi, kernel_size_hi), dtype=float)
-                spread_electrons_to_patch(patch, half_patch, half_patch, n_electrons, kernel)
+                spread_electrons_to_patch(patch, half_patch, half_patch, n_electrons, kernel, rng=rng)
 
                 y0 = y_hi_idx - half_patch
                 y1 = y0 + kernel_size_hi
@@ -405,7 +408,7 @@ def process_electrons_to_DN(
 
 
 def process_pid_electrons_zoom(
-    csvfile, pid, delta_pids, sigma_micron=3.14, hi_res_grid_spacing_micron=2.0, N_sigma=6
+    csvfile, pid, delta_pids, sigma_micron=3.14, hi_res_grid_spacing_micron=2.0, N_sigma=6, rng=None
 ):
     """
     Build a high-res patch (electrons) for a given PID and its delta PIDs.
@@ -441,7 +444,7 @@ def process_pid_electrons_zoom(
         if n_electrons > 0:
             x_idx = int(np.floor((x_um - x0_um) / hi_res_grid_spacing_micron))
             y_idx = int(np.floor((y_um - y0_um) / hi_res_grid_spacing_micron))
-            spread_electrons_to_patch(patch, x_idx, y_idx, n_electrons, kernel)
+            spread_electrons_to_patch(patch, x_idx, y_idx, n_electrons, kernel, rng=rng)
 
     x_coords_um = x0_um + np.arange(n_pix_x) * hi_res_grid_spacing_micron
     y_coords_um = y0_um + np.arange(n_pix_y) * hi_res_grid_spacing_micron
@@ -540,6 +543,7 @@ def _process_pid_chunk(
     N_sigma,
     n_pixels,
     pixel_size_micron,
+    rng,
 ):
     """
     pid_chunk_items: list of (pid, xs_um, ys_um, dEs_MeV) arrays
@@ -589,7 +593,7 @@ def _process_pid_chunk(
                 continue
             x_idx = int(np.floor((float(x_um) - patch_x0_um) / hi_res_grid_spacing_micron))
             y_idx = int(np.floor((float(y_um) - patch_y0_um) / hi_res_grid_spacing_micron))
-            spread_electrons_to_patch(patch, x_idx, y_idx, n_electrons, kernel)
+            spread_electrons_to_patch(patch, x_idx, y_idx, n_electrons, kernel, rng=rng)
 
         hi_x0 = int(np.floor(patch_x0_um / hi_res_grid_spacing_micron))
         hi_y0 = int(np.floor(patch_y0_um / hi_res_grid_spacing_micron))
@@ -684,6 +688,8 @@ def process_electrons_to_DN_by_blob(
     detector_dtype=np.float32,
     n_workers=None,
     chunk_size=64,
+    rng=None,
+    one_explicit=False,
 ):
     """
     Convert deposited electron events into a detector DN (Digital Number) map
@@ -740,6 +746,11 @@ def process_electrons_to_DN_by_blob(
         If ``None``, uses ``(os.cpu_count() - 1)`` (minimum 1).
     chunk_size : int, default=64
         Number of PIDs grouped into each processing chunk to reduce multiprocessing overhead.
+    rng : np.random.RandomState or np.random.PCG64 or similar, optional
+        The random number generator to use.
+    one_explicit : bool, optional
+        If True, extracts one process from the loop and does it separately for coverage tracking.
+        Leave off for normal usage.
 
     Returns
     -------
@@ -813,7 +824,9 @@ def process_electrons_to_DN_by_blob(
     chunks = [pid_items[i : i + chunk_size] for i in range(0, len(pid_items), chunk_size)]
 
     # --- parallel map: workers return blocks; parent accumulates => no collisions ---
-    with ProcessPoolExecutor(max_workers=n_workers) as ex:
+    _chunks = chunks[:-1] if one_explicit else chunks
+    ctx = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as ex:
         futures = [
             ex.submit(
                 _process_pid_chunk,
@@ -826,8 +839,9 @@ def process_electrons_to_DN_by_blob(
                 N_sigma,
                 n_pixels,
                 pixel_size_micron,
+                rng,
             )
-            for chunk in chunks
+            for chunk in _chunks
         ]
 
         for fut in tqdm(
@@ -837,6 +851,24 @@ def process_electrons_to_DN_by_blob(
             for y0, x0, block in blocks:
                 h, w = block.shape
                 H_detector[y0 : y0 + h, x0 : x0 + w] += block
+
+    # if one_explicit is set, do the last one separately
+    if one_explicit:
+        blocks = _process_pid_chunk(
+            chunks[-1],
+            kernel,
+            kernel_size_hi,
+            r,
+            hi_res_grid_spacing_micron,
+            sigma_micron,
+            N_sigma,
+            n_pixels,
+            pixel_size_micron,
+            rng,
+        )
+        for y0, x0, block in blocks:
+            h, w = block.shape
+            H_detector[y0 : y0 + h, x0 : x0 + w] += block
 
     # --- rest of your function unchanged (gain + save) ---
     if not apply_gain:
