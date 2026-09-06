@@ -73,3 +73,11 @@ class FastForwardRNG:
             gens.append(np.random.Generator(bitgen))
             bitgen = bitgen.jumped()  # new independent stream
         return gens
+
+    # below here are additional methods. these don't increment the
+    # position, but they can be used for repeatability.
+
+    def multinomial(self, n, pvals, size=None):
+        """Return a random float in [0,1)."""
+        self.position += 1
+        return self.rng.multinomial(n, pvals, size=size)

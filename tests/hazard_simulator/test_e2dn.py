@@ -14,20 +14,20 @@ def test_compare_e2dn():
     rng = ffRNG(2026)  # now that we passed it in, what do we do with it again?
 
     # create sim object to run gcrs through the detector
-    sim = CosmicRaySimulation(grid_size=4088, date=2026.0)
+    sim = CosmicRaySimulation(grid_size=4088, date=2026.0, rng=rng)
     _, _, trajectory_data, _ = sim.run_full_sim(
         grid_size=4088, dt=10.0, progress_bar=False, apply_padding=False
     )
 
     # 3 ways of getting the output array
     out_array1 = process_electrons_to_DN_by_blob(
-        csvfile=None, streaks=trajectory_data, n_pixels=4088, apply_gain=False
+        csvfile=None, streaks=trajectory_data, n_pixels=4088, apply_gain=False, rng=rng
     ).astype(np.float32, copy=False)
     out_array2 = process_electrons_to_DN_by_blob2(
         rng_ff=rng, csvfile=None, streaks=trajectory_data, n_pixels=4088, apply_gain=False
     ).astype(np.float32, copy=False)
     out_array3 = process_electrons_to_DN_by_blob(
-        csvfile=None, streaks=trajectory_data, n_pixels=4088, apply_gain=False, one_explicit=True
+        csvfile=None, streaks=trajectory_data, n_pixels=4088, apply_gain=False, rng=rng, one_explicit=True
     ).astype(np.float32, copy=False)
 
     obj1 = sep.extract(out_array1, 50.0, minarea=2)
