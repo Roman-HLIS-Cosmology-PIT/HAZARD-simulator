@@ -362,7 +362,7 @@ class CosmicRaySimulation:
     """
 
     # Class-level lists for species (charge and mass)
-    Z_list = [-1] + list(range(1,84)) + [90, 92]  # Omitting z=84-89 and z = 91 due to short half-lives
+    Z_list = [-1] + list(range(1, 84)) + [90, 92]  # Omitting z=84-89 and z = 91 due to short half-lives
     m_list = [
         5.109989461e5,
         0.9382720813e9,
