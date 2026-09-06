@@ -1,4 +1,8 @@
-.. image:: https://codecov.io/github/Roman-HLIS-Cosmology-PIT/HAZARD-simulator/graph/badge.svg?token=W84I8gAWqx
+|badge1| |badge2|
+
+.. |badge1| image:: https://codecov.io/github/Roman-HLIS-Cosmology-PIT/HAZARD-simulator/graph/badge.svg
+
+.. |badge2| image:: https://github.com/Roman-HLIS-Cosmology-PIT/HAZARD-simulator/actions/workflows/smoke-test.yml/badge.svg
 
 GCR Simulation Framework — Main Scripts Overview (WORK IN PROGRESS)
 ###################################################################
