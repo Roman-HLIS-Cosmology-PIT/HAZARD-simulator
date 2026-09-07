@@ -49,3 +49,7 @@ def test_ffrng():
     q1 = rng.random()
     q2 = rng2.random()
     assert np.abs(q1 - q2) < 1.0e-7
+
+    arr = rng2.multinomial(1000, np.ones(4) / 4.0, size=1)
+    assert np.all(arr > 200)
+    assert np.all(arr < 300)
