@@ -68,7 +68,7 @@ def generate_singleframe_cr(
     # create sim object to run gcrs through the detector
     sim = CosmicRaySimulation(grid_size=nat_pix, date=date, rng=rng)
     _, _, trajectory_data, _ = sim.run_full_sim(
-        grid_size=nat_pix, dt=dt, progress_bar=True, apply_padding=apply_padding
+        rng, grid_size=nat_pix, dt=dt, progress_bar=True, apply_padding=apply_padding
     )
 
     # extract the energy deposition and energy transfer data into a csv file

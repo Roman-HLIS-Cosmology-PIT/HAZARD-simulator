@@ -1057,7 +1057,7 @@ class CosmicRaySimulation:
             Padding mode (passed to ``numpy.pad``), e.g., ``"constant"`` or ``"edge"``.
         pad_value : int or float, default=0
             Constant value to use when ``pad_mode="constant"``.
-        rng : np.random.RandomState or np.random.PCG64 or similar, optional
+        rng : hazard_simulator.ffrng.FastForwardRNG
             The random number generator to use.
 
         Notes
@@ -1131,11 +1131,12 @@ class CosmicRaySimulation:
         self.num_part_table = None
 
         # random number generator
-        self.rng = rng if rng is not None else np.random
+        self.rng = rng
 
     @classmethod
     def run_full_sim(
         cls,
+        rng,
         grid_size: int = 4088,  # num of pixels
         progress_bar: bool = False,
         apply_padding: bool = True,
@@ -1150,6 +1151,8 @@ class CosmicRaySimulation:
 
         Parameters
         ----------
+        rng : hazard_simulator.ffrng.FastForwardRNG
+            The random number generator.
         grid_size : int, default=4088
             Number of pixels per side of the detector grid for each per-species run.
             Units: pixels.
@@ -1204,7 +1207,10 @@ class CosmicRaySimulation:
         for idx in tqdm(
             range(len(cls.Z_list)), desc="Running simulation for each species", disable=not progress_bar
         ):
+            xrng = rng.copy()
+            rng.advance(2**30)
             sim = cls(
+                rng=xrng,
                 species_index=idx,
                 grid_size=grid_size,
                 progress_bar=False,
@@ -2359,6 +2365,10 @@ class CosmicRaySimulation:
         delta_ray_counter = 1  # unitless
         primary_idx = (PID >> 14) & ((1 << 11) - 1)  # unitless
 
+        # rng splitting for delta rays
+        rng2 = self.rng.copy()
+        self.rng.advance(2**28)
+
         # create executor for delta rays
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = []
@@ -2435,12 +2445,12 @@ class CosmicRaySimulation:
                     delta_N = (K / 2) * (Z / A) * (z**2 / beta**2) * integral_value * rho * s_cm
 
                 # --- delta-ray event logic ---
-                n_delta = self.rng.poisson(delta_N) if delta_N > 0 else 0
+                n_delta = rng2.poisson(delta_N) if delta_N > 0 else 0
 
                 for _ in range(n_delta):
                     accepted = False
                     while not accepted:
-                        x_inv = self.rng.uniform(1 / T_max_val, 1 / T_min)
+                        x_inv = rng2.uniform(1 / T_max_val, 1 / T_min)
                         T_candidate = 1 / x_inv
                         accepted = True
                     T_delta = T_candidate  # MeV
@@ -2449,7 +2459,7 @@ class CosmicRaySimulation:
                         current_energy = 0
                         break
                     theta_delta = np.arccos(np.sqrt(T_delta / T_max_val))
-                    phi_delta = 2 * np.pi * self.rng.uniform(0, 1)
+                    phi_delta = 2 * np.pi * rng2.uniform(0, 1)
                     theta_global, phi_global = self.transform_angles(theta, phi, theta_delta, phi_delta)
                     delta_ray_PID = CosmicRaySimulation.encode_pid(
                         self.species_index, primary_idx, delta_ray_counter
@@ -2480,8 +2490,8 @@ class CosmicRaySimulation:
                     * (1 + 0.038 * np.log(s_cm / self.X0))
                 )
                 theta0_values.append(theta0)
-                delta_theta = self.rng.normal(0, theta0)
-                delta_phi = self.rng.uniform(0, 2 * np.pi)
+                delta_theta = rng2.normal(0, theta0)
+                delta_phi = rng2.uniform(0, 2 * np.pi)
                 vx = np.sin(theta) * np.cos(phi)
                 vy = np.sin(theta) * np.sin(phi)
                 vz = np.cos(theta)
@@ -2666,8 +2676,8 @@ class CosmicRaySimulation:
             E_max = num_part_table["End Energy (eV/nuc)"].iat[j]  # eV/nucleon
             streaks = []
             for _ in range(count):
-                x = self.rng.randint(0, num_pixels)
-                y = self.rng.randint(0, num_pixels)
+                x = min(self.rng.random() * num_pixels, num_pixels - 1)  # randint is deprecated
+                y = min(self.rng.random() * num_pixels, num_pixels - 1)
                 init_en = self.rng.uniform(
                     E_min, E_max
                 )  # in eV/nucleon, should I multiply through by A_list to make it eV?

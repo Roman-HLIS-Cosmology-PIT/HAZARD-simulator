@@ -17,6 +17,14 @@ class FastForwardRNG:
         self.rng = np.random.Generator(self.bitgen)
         self.position = 0  # track how many draws we've advanced
 
+    def copy(self):
+        """Return a copy."""
+        x = FastForwardRNG()
+        x.bitgen = copy.deepcopy(self.bitgen)
+        x.rng = np.random.Generator(x.bitgen)
+        x.position = self.position
+        return x
+
     def random(self):
         """Return a random float in [0,1)."""
         self.position += 1
@@ -78,6 +86,21 @@ class FastForwardRNG:
     # position, but they can be used for repeatability.
 
     def multinomial(self, n, pvals, size=None):
-        """Return a random float in [0,1)."""
+        """Return from a multinomial distribution."""
         self.position += 1
         return self.rng.multinomial(n, pvals, size=size)
+
+    def poisson(self, lam=1.0, size=None):
+        """Return from a Poisson distribution."""
+        self.position += 1
+        return self.rng.poisson(lam=lam, size=size)
+
+    def uniform(self, low=0.0, high=1.0, size=None):
+        """Return from a uniform distribution."""
+        self.position += 1
+        return self.rng.uniform(low=low, high=high, size=size)
+
+    def normal(self, loc=0.0, scale=1.0, size=None):
+        """Return from a normal distribution."""
+        self.position += 1
+        return self.rng.normal(loc=loc, scale=scale, size=size)

@@ -16,7 +16,7 @@ def test_compare_e2dn():
     # create sim object to run gcrs through the detector
     sim = CosmicRaySimulation(grid_size=4088, date=2026.0, rng=rng)
     _, _, trajectory_data, _ = sim.run_full_sim(
-        grid_size=4088, dt=10.0, progress_bar=False, apply_padding=False
+        rng, grid_size=4088, dt=10.0, progress_bar=False, apply_padding=False
     )
 
     # 3 ways of getting the output array
