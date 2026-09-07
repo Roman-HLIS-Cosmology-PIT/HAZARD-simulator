@@ -1328,17 +1328,17 @@ class CosmicRaySimulation:
     def encode_pid(species_idx, primary_idx, delta_idx):
         """
         Encode a PID using bit-based packing:
-          - 7 bits for species_idx (0–127)
-          - 11 bits for primary_idx (0–2047)
-          - 14 bits for delta_idx (0–16383)
-        Returns a 32-bit integer.
+          - 7 bits for species_idx (0 – 127)
+          - 29 bits for primary_idx (0 – 536 870 911)
+          - 28 bits for delta_idx (0 – 268 435 455)
+        Returns a 64-bit integer.
         """
-        return (species_idx << (11 + 14)) | (primary_idx << 14) | delta_idx
+        return (species_idx << (29 + 28)) | (primary_idx << 28) | delta_idx
 
     @staticmethod
     def decode_pid(encoded, species_names=species_names_list):
         """
-        Decode an encoded 32-bit PID integer into a human-readable string.
+        Decode an encoded 64-bit PID integer into a human-readable string.
 
         By default, species index 0→"e", 1→"H", 2→"He", 3→"Li", … unless
         a custom mapping is provided via ``species_names``.
@@ -1346,7 +1346,7 @@ class CosmicRaySimulation:
         Parameters
         ----------
         encoded : int
-            The encoded 32-bit PID value.
+            The encoded 64-bit PID value.
         species_names : Sequence[str] | None, default=None
             Optional mapping from species index to species symbol. If ``None``,
             a built-in list (``["e", "H", "He", ...]``) is used.
@@ -1354,19 +1354,19 @@ class CosmicRaySimulation:
         Returns
         -------
         str
-            A string like ``"H-P0045-D00023"`` where:
+            A string like ``"H-P000000045-D000000023"`` where:
             * prefix is the species symbol,
-            * ``P####`` is the zero-padded primary index,
-            * ``D#####`` is the zero-padded delta-ray index.
+            * ``P#########`` is the zero-padded primary index,
+            * ``D#########`` is the zero-padded delta-ray index.
         """
         # Define bit widths:
         species_bits = 7  # 0-127
-        primary_bits = 11  # 0-2047
-        delta_bits = 14  # 0-16383
+        primary_bits = 29  # 0-536 870 911
+        delta_bits = 28  # 0-268 435 455
 
         # Extract bits:
-        delta_mask = (1 << delta_bits) - 1  # lower 14 bits mask
-        primary_mask = (1 << primary_bits) - 1  # next 11 bits mask
+        delta_mask = (1 << delta_bits) - 1  # lower 28 bits mask
+        primary_mask = (1 << primary_bits) - 1  # next 29 bits mask
         species_mask = (1 << species_bits) - 1  # top 7 bits mask
 
         delta_idx = encoded & delta_mask
@@ -1375,18 +1375,18 @@ class CosmicRaySimulation:
 
         species_name = species_names[species_idx]
 
-        return f"{species_name}-P{primary_idx:04d}-D{delta_idx:05d}"
+        return f"{species_name}-P{primary_idx:09d}-D{delta_idx:09d}"
 
     @staticmethod
     def encode_pid_string(pid_str, species_names=species_names_list):
         """
-        Parse a PID string like ``"H-P0045-D00023"`` and return its 32-bit encoding.
+        Parse a PID string like ``"H-P000000045-D000000023"`` and return its 64-bit encoding.
 
         Parameters
         ----------
         pid_str : str
-            PID in the format ``"<Species>-P<primary:04d>-D<delta:05d>"``, e.g.,
-            ``"He-P0012-D00007"``. The species part must either be in the built-in
+            PID in the format ``"<Species>-P<primary:09d>-D<delta:09d>"``, e.g.,
+            ``"He-P000000012-D000000007"``. The species part must either be in the built-in
             table (``["e","H","He",...]``) or of the form ``"X<index>"`` for a
             numeric species index.
         species_names : sequence of str, optional
@@ -1396,7 +1396,7 @@ class CosmicRaySimulation:
         Returns
         -------
         int
-            The encoded 32-bit PID value.
+            The encoded 64-bit PID value.
 
         Raises
         ------
@@ -1406,13 +1406,13 @@ class CosmicRaySimulation:
         # Expected format: "<species>-P<primary_idx:04d>-D<delta_idx:05d>"
         parts = pid_str.split("-")
         if len(parts) != 3:
-            raise ValueError("PID string must be in the format 'Species-Pxxxx-Dyyyyy'")
+            raise ValueError("PID string must be in the format 'Species-Pxxxxxxxxx-Dyyyyyyyyy'")
 
         species_part, primary_part, delta_part = parts
 
         # Verify that the primary and delta parts start with 'P' and 'D' respectively.
         if not primary_part.startswith("P") or not delta_part.startswith("D"):
-            raise ValueError("PID string must have parts in the format 'Pxxxx' and 'Dyyyyy'")
+            raise ValueError("PID string must have parts in the format 'Pxxxxxxxxx' and 'Dyyyyyyyyy'")
 
         # try:
         primary_idx = int(primary_part[1:])
@@ -1429,15 +1429,15 @@ class CosmicRaySimulation:
         Parameters
         ----------
         encoded_pid : int
-            The encoded 32-bit PID of a delta-ray particle.
+            The encoded 64-bit PID of a delta-ray particle.
 
         Returns
         -------
         int
-            The encoded 32-bit PID of the parent primary (lower 14 bits zeroed).
+            The encoded 64-bit PID of the parent primary (lower 28 bits zeroed).
         """
         # Zero out the lower 14 bits that represent the delta ray index.
-        parent_encoded = encoded_pid & ~((1 << 14) - 1)
+        parent_encoded = encoded_pid & ~((1 << 28) - 1)
         # Return the parent's PID in bit format.
         return parent_encoded
 
