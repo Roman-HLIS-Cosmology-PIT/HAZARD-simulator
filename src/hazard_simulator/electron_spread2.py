@@ -12,6 +12,12 @@ from scipy.stats import nbinom
 from tqdm import tqdm
 
 
+def _rng_from_state(rng_state: dict) -> np.random.Generator:
+    bitgen = np.random.PCG64()
+    bitgen.state = rng_state
+    return np.random.Generator(bitgen)
+
+
 # new functions to handle 'histogram electrons -> Gaussian blur -> downsample' routine:
 def _tile_worker_histblur(args):
     (
@@ -206,12 +212,6 @@ def electron_conversion_nb_array_gamma_poisson(
     tmp[good] = k
     out[m] = tmp
     return out
-
-
-def _rng_from_state(rng_state: dict) -> np.random.Generator:
-    bitgen = np.random.PCG64()
-    bitgen.state = rng_state
-    return np.random.Generator(bitgen)
 
 
 def kernel_size_from_sigma(sigma_um, grid_spacing_um, N_sigma=6):
@@ -543,12 +543,15 @@ def _process_pid_chunk(
     N_sigma,
     n_pixels,
     pixel_size_micron,
-    rng,
+    rng_state,
 ):
     """
     pid_chunk_items: list of (pid, xs_um, ys_um, dEs_MeV) arrays
     Returns: list of (dst_y0, dst_x0, block_array)
     """
+
+    rng = _rng_from_state(rng_state)
+
     det_shape = (n_pixels, n_pixels)
     det_size_um = n_pixels * pixel_size_micron
     expand = N_sigma * sigma_micron
@@ -823,6 +826,10 @@ def process_electrons_to_DN_by_blob(
     # chunk PIDs to reduce overhead
     chunks = [pid_items[i : i + chunk_size] for i in range(0, len(pid_items), chunk_size)]
 
+    # get rngs
+    tile_rngs = rng.spawn_generators_by_jump(len(chunks))
+    tile_rng_states = [g.bit_generator.state for g in tile_rngs]
+
     # --- parallel map: workers return blocks; parent accumulates => no collisions ---
     _chunks = chunks[:-1] if one_explicit else chunks
     ctx = multiprocessing.get_context("spawn")
@@ -839,9 +846,9 @@ def process_electrons_to_DN_by_blob(
                 N_sigma,
                 n_pixels,
                 pixel_size_micron,
-                rng,
+                tile_rng_states[i],
             )
-            for chunk in _chunks
+            for i, chunk in enumerate(_chunks)
         ]
 
         for fut in tqdm(
@@ -864,7 +871,7 @@ def process_electrons_to_DN_by_blob(
             N_sigma,
             n_pixels,
             pixel_size_micron,
-            rng,
+            tile_rng_states[-1],
         )
         for y0, x0, block in blocks:
             h, w = block.shape
