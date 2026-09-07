@@ -2435,15 +2435,7 @@ class CosmicRaySimulation:
                     delta_N = (K / 2) * (Z / A) * (z**2 / beta**2) * integral_value * rho * s_cm
 
                 # --- delta-ray event logic ---
-                if delta_N > 0:
-                    if delta_N < 1:
-                        # Bernoulli trial: produce 1 delta ray with probability delta_N
-                        n_delta = 1 if self.rng.uniform(0, 1) < delta_N else 0
-                    else:
-                        # Poisson-draw number of delta rays when mean is >= 1
-                        n_delta = self.rng.poisson(delta_N)
-                else:
-                    n_delta = 0
+                n_delta = self.rng.poisson(delta_N) if delta_N > 0 else 0
 
                 for _ in range(n_delta):
                     accepted = False
