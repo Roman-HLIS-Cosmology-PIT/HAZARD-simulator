@@ -40,3 +40,12 @@ def test_ffrng():
     q1 = rng.random()
     q2 = rng2.random()
     assert np.abs(q1 - q2) < 1.0e-7
+
+    rng2 = FastForwardRNG(676767)
+    q1 = rng.random()
+    q2 = rng2.random()
+    assert np.abs(q1 - q2) > 1.0e-7
+    rng2.set_state(rng.get_state())
+    q1 = rng.random()
+    q2 = rng2.random()
+    assert np.abs(q1 - q2) < 1.0e-7

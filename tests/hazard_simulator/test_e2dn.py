@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import sep
 from hazard_simulator.electron_spread2 import (
     process_electrons_to_DN_by_blob,
@@ -95,3 +96,37 @@ def test_compare_e2dn(tmp_path):
         assert -0.2 < np.log(obj1["flux"][i] / obj3["flux"][i]) < 0.2
         assert np.hypot(obj1["x"][i] - obj4["x"][i], obj1["y"][i] - obj4["y"][i]) < 0.5
         assert -0.2 < np.log(obj1["flux"][i] / obj4["flux"][i]) < 0.2
+
+    # check errors
+    with pytest.raises(ValueError):
+        process_electrons_to_DN_by_blob(
+            csvfile=None,
+            streaks=trajectory_data,
+            n_pixels=4088,
+            apply_gain=True,
+            rng=rng,
+        )
+    with pytest.raises(ValueError):
+        process_electrons_to_DN_by_blob2(
+            csvfile=None,
+            streaks=trajectory_data,
+            n_pixels=4088,
+            apply_gain=True,
+            rng_ff=rng,
+        )
+    with pytest.raises(ValueError):
+        process_electrons_to_DN_by_blob(
+            csvfile=None,
+            streaks=None,
+            n_pixels=4088,
+            apply_gain=False,
+            rng=rng,
+        )
+    with pytest.raises(ValueError):
+        process_electrons_to_DN_by_blob2(
+            csvfile=None,
+            streaks=None,
+            n_pixels=4088,
+            apply_gain=False,
+            rng_ff=rng,
+        )
