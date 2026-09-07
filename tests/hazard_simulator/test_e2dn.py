@@ -19,7 +19,7 @@ def test_compare_e2dn():
         rng, grid_size=4088, dt=10.0, progress_bar=False, apply_padding=False
     )
 
-    # 3 ways of getting the output array
+    # 4 ways of getting the output array
     out_array1 = process_electrons_to_DN_by_blob(
         csvfile=None, streaks=trajectory_data, n_pixels=4088, apply_gain=False, rng=rng
     ).astype(np.float32, copy=False)

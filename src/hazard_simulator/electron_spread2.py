@@ -11,6 +11,8 @@ from scipy.ndimage import gaussian_filter
 from scipy.stats import nbinom
 from tqdm import tqdm
 
+from .ffrng import FastForwardRNG
+
 
 def _rng_from_state(rng_state: dict) -> np.random.Generator:
     bitgen = np.random.PCG64()
@@ -1227,11 +1229,21 @@ if __name__ == "__main__":
             "Use --no-apply-gain to skip gain."
         )
 
+    ffrng = FastForwardRNG()
+
     if args.mode == "blob":
         process_electrons_to_DN_by_blob(
-            args.csvfile, gain_txt=args.gain_txt, output_array_path=args.output, apply_gain=args.apply_gain
+            args.csvfile,
+            gain_txt=args.gain_txt,
+            output_array_path=args.output,
+            apply_gain=args.apply_gain,
+            rng=ffrng,
         )
     else:
         process_electrons_to_DN(
-            args.csvfile, gain_txt=args.gain_txt, output_array_path=args.output, apply_gain=args.apply_gain
+            args.csvfile,
+            gain_txt=args.gain_txt,
+            output_array_path=args.output,
+            apply_gain=args.apply_gain,
+            rng=ffrng,
         )

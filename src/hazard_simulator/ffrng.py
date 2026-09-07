@@ -41,11 +41,11 @@ class FastForwardRNG:
 
     def jump_power_of_two(self, k=1):
         """
-        Jump ahead by k * 2^128 draws using PCG64.jump().
+        Jump ahead by k * 2^128 draws using PCG64.jumped().
         Useful for generating independent sequences.
         """
         for _ in range(k):
-            self.bitgen.jump()
+            self.bitgen = self.bitgen.jumped()
         self.rng = np.random.Generator(self.bitgen)
         # we don't know exact length of jump, so don't increment position
 

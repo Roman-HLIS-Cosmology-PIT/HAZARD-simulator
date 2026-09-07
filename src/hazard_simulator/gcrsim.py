@@ -2275,6 +2275,12 @@ class CosmicRaySimulation:
             dE_dx = self.dEdx_electron(current_energy)  # MeV/cm
             dE = dE_dx * s_cm  # MeV
 
+            # If we've reached zero kinetic energy, breaking prevents weird errors when we try to figure out
+            # "scattering" (what would that even mean?)
+            if current_energy <= 0:
+                current_energy = 0
+                break
+
             # Stop simulation if energy loss is negative; code added by Zac
             if dE < 0:
                 dE = current_energy  # MeV
@@ -2479,6 +2485,12 @@ class CosmicRaySimulation:
                             streaks,
                         )
                     )
+
+                # If we've reached zero kinetic energy, breaking prevents weird errors when we try to figure
+                # out "scattering" (what would that even mean?)
+                if current_energy <= 0:
+                    current_energy = 0
+                    break
 
                 # Multiple scattering for primary
                 mp = self.M
