@@ -1,6 +1,7 @@
 # electron_spread.py
 
 import argparse
+import math
 import multiprocessing
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -395,11 +396,16 @@ def process_electrons_to_DN(
     # Apply gain correction (electrons -> DN)
     if gain_txt is None:
         raise ValueError("gain_txt must be provided when apply_gain=True.")
-    gain_array = np.loadtxt(gain_txt)[:, 5].reshape((32, 32))
-    supercell_size = n_pixels // 32
+    gain_array = np.loadtxt(gain_txt)[:, 5]
+    nbin = math.isqrt(np.size(gain_array))
+    gain_array = gain_array.reshape((nbin, nbin))
+    supercell_size = (n_pixels + nbin - 1) // nbin  # supercell size, rounded up
     gain_map = np.kron(gain_array, np.ones((supercell_size, supercell_size)))
-    assert gain_map.shape == H_detector.shape, "Gain map shape does not match detector image."
     gain_map_safe = np.where(gain_map > 0, gain_map, np.nan)
+    if np.shape(gain_map_safe)[-1] > np.shape(H_detector)[-1]:
+        # trim reference pixels
+        rpix = (np.shape(gain_map_safe)[-1] - np.shape(H_detector)[-1]) // 2
+        gain_map_safe = gain_map_safe[rpix:-rpix, rpix:-rpix]
     H_detector_DN = H_detector / gain_map_safe
 
     if output_array_path:
@@ -888,10 +894,16 @@ def process_electrons_to_DN_by_blob(
 
     if gain_txt is None:
         raise ValueError("gain_txt must be provided when apply_gain=True.")
-    gain_array = np.loadtxt(gain_txt)[:, 5].reshape((32, 32))
-    supercell_size = n_pixels // 32
+    gain_array = np.loadtxt(gain_txt)[:, 5]
+    nbin = math.isqrt(np.size(gain_array))
+    gain_array = gain_array.reshape((nbin, nbin))
+    supercell_size = (n_pixels + nbin - 1) // nbin  # supercell size, rounded up
     gain_map = np.kron(gain_array, np.ones((supercell_size, supercell_size)))
-    gain_map_safe = np.where(gain_map > 0, gain_map, np.nan).astype(np.float32)
+    gain_map_safe = np.where(gain_map > 0, gain_map, np.nan)
+    if np.shape(gain_map_safe)[-1] > np.shape(H_detector)[-1]:
+        # trim reference pixels
+        rpix = (np.shape(gain_map_safe)[-1] - np.shape(H_detector)[-1]) // 2
+        gain_map_safe = gain_map_safe[rpix:-rpix, rpix:-rpix]
 
     H_detector_DN = H_detector / gain_map_safe
     if output_array_path:
@@ -1175,11 +1187,16 @@ def process_electrons_to_DN_by_blob2(
 
     if gain_txt is None:
         raise ValueError("gain_txt must be provided when apply_gain=True.")
-
-    gain_array = np.loadtxt(gain_txt)[:, 5].reshape((32, 32))
-    supercell_size = n_pixels // 32
-    gain_map = np.kron(gain_array, np.ones((supercell_size, supercell_size), dtype=np.float32))
-    gain_map_safe = np.where(gain_map > 0, gain_map, np.nan).astype(np.float32)
+    gain_array = np.loadtxt(gain_txt)[:, 5]
+    nbin = math.isqrt(np.size(gain_array))
+    gain_array = gain_array.reshape((nbin, nbin))
+    supercell_size = (n_pixels + nbin - 1) // nbin  # supercell size, rounded up
+    gain_map = np.kron(gain_array, np.ones((supercell_size, supercell_size)))
+    gain_map_safe = np.where(gain_map > 0, gain_map, np.nan)
+    if np.shape(gain_map_safe)[-1] > np.shape(H_detector)[-1]:
+        # trim reference pixels
+        rpix = (np.shape(gain_map_safe)[-1] - np.shape(H_detector)[-1]) // 2
+        gain_map_safe = gain_map_safe[rpix:-rpix, rpix:-rpix]
 
     H_detector_DN = H_detector / gain_map_safe
     if output_array_path:
