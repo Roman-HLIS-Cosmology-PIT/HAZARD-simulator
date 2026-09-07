@@ -29,10 +29,14 @@ def test_compare_e2dn():
     out_array3 = process_electrons_to_DN_by_blob(
         csvfile=None, streaks=trajectory_data, n_pixels=4088, apply_gain=False, rng=rng, one_explicit=True
     ).astype(np.float32, copy=False)
+    out_array4 = process_electrons_to_DN_by_blob2(
+        rng_ff=rng, csvfile=None, streaks=trajectory_data, n_pixels=4088, apply_gain=False, one_explicit=True
+    ).astype(np.float32, copy=False)
 
     obj1 = sep.extract(out_array1, 50.0, minarea=2)
     obj2 = sep.extract(out_array2, 50.0, minarea=2)
     obj3 = sep.extract(out_array3, 50.0, minarea=2)
+    obj4 = sep.extract(out_array4, 50.0, minarea=2)
 
     # verify the first 3 hits are similar
     for i in range(3):
@@ -41,6 +45,9 @@ def test_compare_e2dn():
         assert -0.2 < np.log(obj1["flux"][i] / obj2["flux"][i]) < 0.2
         assert np.hypot(obj1["x"][i] - obj3["x"][i], obj1["y"][i] - obj3["y"][i]) < 0.5
         assert -0.2 < np.log(obj1["flux"][i] / obj3["flux"][i]) < 0.2
+        assert np.hypot(obj1["x"][i] - obj4["x"][i], obj1["y"][i] - obj4["y"][i]) < 0.5
+        assert -0.2 < np.log(obj1["flux"][i] / obj4["flux"][i]) < 0.2
 
     assert -5 <= len(obj1) - len(obj2) <= 5
     assert -5 <= len(obj1) - len(obj3) <= 5
+    assert -5 <= len(obj1) - len(obj4) <= 5

@@ -916,6 +916,7 @@ def process_electrons_to_DN_by_blob2(
     chunk_tiles=16,  # submit tiles in batches to reduce overhead
     apply_gain=True,
     output_array_path=None,
+    one_explicit=False,
 ):
     """
     Convert deposited electron events into a detector DN (Digital Number) map
@@ -985,6 +986,9 @@ def process_electrons_to_DN_by_blob2(
         If False, returns electrons per pixel without gain conversion.
     output_array_path : str or None, optional
         If provided, saves the output array (electrons or DN) to this path as a ``.npy`` file.
+    one_explicit : bool, optional
+        If True, extracts one process from the loop and does it separately for coverage tracking.
+        Leave off for normal usage.
 
     Returns
     -------
@@ -1145,7 +1149,8 @@ def process_electrons_to_DN_by_blob2(
 
     with ProcessPoolExecutor(max_workers=n_workers) as ex:
         for batch in tqdm(list(batched(jobs, chunk_tiles)), desc=f"Submitting {len(jobs)} tile jobs"):
-            futs = [ex.submit(_tile_worker_histblur, j) for j in batch]
+            _batch = batch[:-1] if one_explicit else batch
+            futs = [ex.submit(_tile_worker_histblur, j) for j in _batch]
             for fut in as_completed(futs):
                 out = fut.result()
                 if out is None:
@@ -1154,6 +1159,13 @@ def process_electrons_to_DN_by_blob2(
                 h, w = block.shape
                 # Clip just in case edge pads produce slightly off sizes
                 H_detector[y0 : y0 + h, x0 : x0 + w] += block
+            if one_explicit:
+                out = _tile_worker_histblur(batch[-1])
+                if out is not None:
+                    y0, x0, block = out
+                    h, w = block.shape
+                    # Clip just in case edge pads produce slightly off sizes
+                    H_detector[y0 : y0 + h, x0 : x0 + w] += block
 
     # --- Gain + save (same as your existing path) ---
     if not apply_gain:
