@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 import sep
-from hazard_simulator.electron_spread2 import process_electrons_to_DN
+from hazard_simulator.electron_spread import process_electrons_to_DN
 from hazard_simulator.ffrng import FastForwardRNG as ffRNG
 from hazard_simulator.gcrsim import CosmicRaySimulation
 
