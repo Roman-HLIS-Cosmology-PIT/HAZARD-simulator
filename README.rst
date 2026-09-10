@@ -20,9 +20,9 @@ NEW WORKFLOW STEPS
     import hazard_simulator.ffrng as ffrng
 
     simulator = sim.CosmicRaySimulation # set up simulator object
-    data = simulator.run_full_sim() # third element in data is trajectory/LET info
 
     my_rng = ffrng.FastForwardRNG() # can also pass a seed number
+    data = simulator.run_full_sim(my_rng) # third element in data is trajectory/LET info
 
     #output_array below is in electrons, can set apply_gain to True and
     # send a gain_txt file (32x32 supercells) in order to get the array in DN
