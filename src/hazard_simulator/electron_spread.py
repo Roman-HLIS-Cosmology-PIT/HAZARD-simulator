@@ -2,7 +2,6 @@
 
 import argparse
 import math
-import multiprocessing
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -360,7 +359,7 @@ def process_electrons_to_DN(
     N_sigma=6,
     tile_pixels=256,
     n_workers=None,
-    chunk_tiles=16,  
+    chunk_tiles=16,
     apply_gain=True,
     output_array_path=None,
     one_explicit=False,
@@ -442,7 +441,7 @@ def process_electrons_to_DN(
         If ``apply_gain=True`` and ``gain_txt`` is not specified.
     """
 
-    # Load events 
+    # Load events
     if csvfile is not None:
         df = pd.read_csv(
             csvfile,
@@ -553,8 +552,8 @@ def process_electrons_to_DN(
     # If jobs is a list of tuples that include (ty, tx) early, sort by those:
     jobs.sort(key=lambda j: (j[0], j[1]))  # assumes (ty, tx, ...) are first
 
-    tile_rngs = rng_ff.spawn_generators_by_jump(len(jobs))  
-    tile_rng_states = [g.bit_generator.state for g in tile_rngs]  
+    tile_rngs = rng_ff.spawn_generators_by_jump(len(jobs))
+    tile_rng_states = [g.bit_generator.state for g in tile_rngs]
 
     # Attach one RNG state per job
     jobs = [(*job, tile_rng_states[i]) for i, job in enumerate(jobs)]
@@ -584,7 +583,7 @@ def process_electrons_to_DN(
                     # Clip just in case edge pads produce slightly off sizes
                     H_detector[y0 : y0 + h, x0 : x0 + w] += block
 
-    # Gain + save 
+    # Gain + save
     if not apply_gain:
         if output_array_path:
             np.save(output_array_path, H_detector)
@@ -675,8 +674,6 @@ if __name__ == "__main__":
             output_array_path=args.output,
             apply_gain=args.apply_gain,
             rng=ffrng,
-        )        
-    if args.streaks is None and args.csvfile is None:
-        raise SystemExit(
-            "Must pass LET data as either CSV file or streaks data from gcrsim."
         )
+    if args.streaks is None and args.csvfile is None:
+        raise SystemExit("Must pass LET data as either CSV file or streaks data from gcrsim.")

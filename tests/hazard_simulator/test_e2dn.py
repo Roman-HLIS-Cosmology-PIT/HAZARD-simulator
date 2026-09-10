@@ -35,7 +35,7 @@ def test_compare_e2dn(tmp_path):
         assert -0.2 < np.log(obj1["flux"][i] / obj2["flux"][i]) < 0.2
 
     assert -5 <= len(obj1) - len(obj2) <= 5
-    del obj2 # cleanup
+    del obj2  # cleanup
 
     # Gain tests
     gain_txt = str(tmp_path) + "/gain.txt"
