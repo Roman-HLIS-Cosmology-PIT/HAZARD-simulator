@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import numpy as np
 
-from .electron_spread2 import process_electrons_to_DN
+from .electron_spread import process_electrons_to_DN
 from .ffrng import FastForwardRNG as ffRNG
 from .gcrsim import CosmicRaySimulation
 
