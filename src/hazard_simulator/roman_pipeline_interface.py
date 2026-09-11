@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import numpy as np
 
-from .electron_spread2 import process_electrons_to_DN_by_blob2
+from .electron_spread import process_electrons_to_DN
 from .ffrng import FastForwardRNG as ffRNG
 from .gcrsim import CosmicRaySimulation
 
@@ -66,9 +66,9 @@ def generate_singleframe_cr(
     rng = ffRNG(seed)  # now that we passed it in, what do we do with it again?
 
     # create sim object to run gcrs through the detector
-    sim = CosmicRaySimulation(grid_size=nat_pix, date=date)
+    sim = CosmicRaySimulation(grid_size=nat_pix, date=date, rng=rng)
     _, _, trajectory_data, _ = sim.run_full_sim(
-        grid_size=nat_pix, dt=dt, progress_bar=True, apply_padding=apply_padding
+        rng, grid_size=nat_pix, dt=dt, progress_bar=True, apply_padding=apply_padding
     )
 
     # extract the energy deposition and energy transfer data into a csv file
@@ -80,7 +80,7 @@ def generate_singleframe_cr(
     # sim.build_energy_loss_csv(trajectory_data, file_name)
 
     # send to electron_spread2.py for pixelation (requires having energy deposition csv)
-    out_array = process_electrons_to_DN_by_blob2(
+    out_array = process_electrons_to_DN(
         rng_ff=rng, csvfile=None, streaks=trajectory_data, n_pixels=nat_pix, apply_gain=False
     )
 

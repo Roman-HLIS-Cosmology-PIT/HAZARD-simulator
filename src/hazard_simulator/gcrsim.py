@@ -362,181 +362,7 @@ class CosmicRaySimulation:
     """
 
     # Class-level lists for species (charge and mass)
-    Z_list = [
-        -1,
-        1,
-        2,
-        3,
-        4,
-        5,
-        6,
-        7,
-        8,
-        9,
-        10,
-        11,
-        12,
-        13,
-        14,
-        15,
-        16,
-        17,
-        18,
-        19,
-        20,
-        21,
-        22,
-        23,
-        24,
-        25,
-        26,
-        27,
-        28,
-        29,
-        30,
-        31,
-        32,
-        33,
-        34,
-        35,
-        36,
-        37,
-        38,
-        39,
-        41,
-        42,
-        43,
-        44,
-        45,
-        46,
-        47,
-        48,
-        49,
-        50,
-        51,
-        52,
-        53,
-        54,
-        55,
-        56,
-        57,
-        58,
-        59,
-        60,
-        61,
-        62,
-        63,
-        64,
-        65,
-        66,
-        67,
-        68,
-        69,
-        70,
-        71,
-        72,
-        73,
-        74,
-        75,
-        76,
-        77,
-        78,
-        79,
-        80,
-        81,
-        82,
-        83,
-        90,
-        92,
-    ]  # Omitting z=84-89 and z = 91 due to short half-lives
-    m_list = [
-        5.109989461e5,
-        0.9382720813e9,
-        2 * (0.9382720813e9) + 2 * (0.9395654133e9),
-        3 * (0.9382720813e9) + 4 * (0.9395654133e9),
-        4 * (0.9382720813e9) + 5 * (0.9395654133e9),
-        5 * (0.9382720813e9) + 6 * (0.9395654133e9),
-        6 * (0.9382720813e9) + 6 * (0.9395654133e9),
-        7 * (0.9382720813e9) + 7 * (0.9395654133e9),
-        8 * (0.9382720813e9) + 8 * (0.9395654133e9),
-        9 * (0.9382720813e9) + 10 * (0.9395654133e9),
-        10 * (0.9382720813e9) + 10 * (0.9395654133e9),
-        11 * (0.9382720813e9) + 12 * (0.9395654133e9),
-        12 * (0.9382720813e9) + 12 * (0.9395654133e9),
-        13 * (0.9382720813e9) + 14 * (0.9395654133e9),
-        14 * (0.9382720813e9) + 14 * (0.9395654133e9),
-        15 * (0.9382720813e9) + 16 * (0.9395654133e9),
-        16 * (0.9382720813e9) + 16 * (0.9395654133e9),
-        17 * (0.9382720813e9) + 18 * (0.9395654133e9),
-        18 * (0.9382720813e9) + 22 * (0.9395654133e9),
-        19 * (0.9382720813e9) + 20 * (0.9395654133e9),
-        20 * (0.9382720813e9) + 20 * (0.9395654133e9),
-        21 * (0.9382720813e9) + 24 * (0.9395654133e9),
-        22 * (0.9382720813e9) + 26 * (0.9395654133e9),
-        23 * (0.9382720813e9) + 28 * (0.9395654133e9),
-        24 * (0.9382720813e9) + 28 * (0.9395654133e9),
-        25 * (0.9382720813e9) + 30 * (0.9395654133e9),
-        26 * (0.9382720813e9) + 30 * (0.9395654133e9),
-        27 * (0.9382720813e9) + 32 * (0.9395654133e9),
-        28 * (0.9382720813e9) + 30 * (0.9395654133e9),
-        29 * (0.9382720813e9) + 34 * (0.9395654133e9),
-        30 * (0.9382720813e9) + 34 * (0.9395654133e9),
-        31 * (0.9382720813e9) + 38 * (0.9395654133e9),
-        32 * (0.9382720813e9) + 42 * (0.9395654133e9),
-        33 * (0.9382720813e9) + 42 * (0.9395654133e9),
-        34 * (0.9382720813e9) + 46 * (0.9395654133e9),
-        35 * (0.9382720813e9) + 44 * (0.9395654133e9),
-        36 * (0.9382720813e9) + 48 * (0.9395654133e9),
-        37 * (0.9382720813e9) + 48 * (0.9395654133e9),
-        38 * (0.9382720813e9) + 50 * (0.9395654133e9),
-        39 * (0.9382720813e9) + 50 * (0.9395654133e9),
-        40 * (0.9382720813e9) + 50 * (0.9395654133e9),
-        41 * (0.9382720813e9) + 52 * (0.9395654133e9),
-        42 * (0.9382720813e9) + 56 * (0.9395654133e9),
-        43 * (0.9382720813e9) + 54 * (0.9395654133e9),
-        44 * (0.9382720813e9) + 58 * (0.9395654133e9),
-        45 * (0.9382720813e9) + 58 * (0.9395654133e9),
-        46 * (0.9382720813e9) + 60 * (0.9395654133e9),
-        47 * (0.9382720813e9) + 60 * (0.9395654133e9),
-        48 * (0.9382720813e9) + 66 * (0.9395654133e9),
-        49 * (0.9382720813e9) + 69 * (0.9395654133e9),
-        50 * (0.9382720813e9) + 69 * (0.9395654133e9),
-        51 * (0.9382720813e9) + 70 * (0.9395654133e9),
-        52 * (0.9382720813e9) + 78 * (0.9395654133e9),
-        53 * (0.9382720813e9) + 74 * (0.9395654133e9),
-        54 * (0.9382720813e9) + 78 * (0.9395654133e9),
-        55 * (0.9382720813e9) + 78 * (0.9395654133e9),
-        56 * (0.9382720813e9) + 82 * (0.9395654133e9),
-        57 * (0.9382720813e9) + 82 * (0.9395654133e9),
-        58 * (0.9382720813e9) + 82 * (0.9395654133e9),
-        59 * (0.9382720813e9) + 82 * (0.9395654133e9),
-        60 * (0.9382720813e9) + 82 * (0.9395654133e9),
-        61 * (0.9382720813e9) + 83 * (0.9395654133e9),
-        62 * (0.9382720813e9) + 90 * (0.9395654133e9),
-        63 * (0.9382720813e9) + 90 * (0.9395654133e9),
-        64 * (0.9382720813e9) + 94 * (0.9395654133e9),
-        65 * (0.9382720813e9) + 94 * (0.9395654133e9),
-        66 * (0.9382720813e9) + 98 * (0.9395654133e9),
-        67 * (0.9382720813e9) + 98 * (0.9395654133e9),
-        68 * (0.9382720813e9) + 98 * (0.9395654133e9),
-        69 * (0.9382720813e9) + 100 * (0.9395654133e9),
-        70 * (0.9382720813e9) + 104 * (0.9395654133e9),
-        71 * (0.9382720813e9) + 104 * (0.9395654133e9),
-        72 * (0.9382720813e9) + 108 * (0.9395654133e9),
-        73 * (0.9382720813e9) + 108 * (0.9395654133e9),
-        74 * (0.9382720813e9) + 112 * (0.9395654133e9),
-        75 * (0.9382720813e9) + 112 * (0.9395654133e9),
-        76 * (0.9382720813e9) + 116 * (0.9395654133e9),
-        77 * (0.9382720813e9) + 116 * (0.9395654133e9),
-        78 * (0.9382720813e9) + 116 * (0.9395654133e9),
-        79 * (0.9382720813e9) + 118 * (0.9395654133e9),
-        80 * (0.9382720813e9) + 122 * (0.9395654133e9),
-        81 * (0.9382720813e9) + 124 * (0.9395654133e9),
-        82 * (0.9382720813e9) + 126 * (0.9395654133e9),
-        83 * (0.9382720813e9) + 126 * (0.9395654133e9),
-        90 * (0.9382720813e9) + 142 * (0.9395654133e9),
-        92 * (0.9382720813e9) + 146 * (0.9395654133e9),
-    ]  # masses in eV
+    Z_list = [-1] + list(range(1, 84)) + [90, 92]  # Omitting z=84-89 and z = 91 due to short half-lives
     A_list = [
         1.0,
         1.0,
@@ -626,7 +452,7 @@ class CosmicRaySimulation:
         (238.0),
     ]  # unitless (mass number) (analogous to num of nucleons/particle)
 
-    m_list = [float(x) / float(y) for x, y in zip(m_list, A_list, strict=False)]  # NOW its in eV/nucleon
+    m_list = [5.109989461e5] + [9.382720813e8] * 85  # in eV/nucleon (except electron is in eV)
 
     C_list = [
         170,
@@ -746,151 +572,37 @@ class CosmicRaySimulation:
         3.01,
         4.25,
         3.52,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-        3.01,
-    ]  # unitless
-    gamma_values_list = [
-        2.74,
-        2.77,
-        2.82,
-        3.05,
-        2.96,
-        2.76,
-        2.89,
-        2.70,
-        2.82,
-        2.76,
-        2.84,
-        2.70,
-        2.77,
-        2.66,
-        2.89,
-        2.71,
-        3.00,
-        2.93,
-        3.05,
-        2.77,
-        2.97,
-        2.99,
-        2.94,
-        2.89,
-        2.74,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-        2.63,
-    ]  # unitless (this list is 1 element shorter than the others [85 vs 86] to account for gamma_func() )
+    ] + [3.01] * 57  # unitless
+    gamma_values_list = (
+        [
+            2.74,
+            2.77,
+            2.82,
+            3.05,
+            2.96,
+            2.76,
+            2.89,
+            2.70,
+            2.82,
+            2.76,
+            2.84,
+            2.70,
+            2.77,
+            2.66,
+            2.89,
+            2.71,
+            3.00,
+            2.93,
+            3.05,
+            2.77,
+            2.97,
+            2.99,
+            2.94,
+            2.89,
+            2.74,
+        ]
+        + [2.63] * 60
+    )  # unitless (this list is 1 element shorter than the others [85 vs 86] to account for gamma_func() )
     species_names_list = [
         "e",
         "H",
@@ -979,95 +691,7 @@ class CosmicRaySimulation:
         "Th",
         "U",
     ]
-
-    species_names_dict = {
-        0: "e",
-        1: "H",
-        2: "He",
-        3: "Li",
-        4: "Be",
-        5: "B",
-        6: "C",
-        7: "N",
-        8: "O",
-        9: "F",
-        10: "Ne",
-        11: "Na",
-        12: "Mg",
-        13: "Al",
-        14: "Si",
-        15: "P",
-        16: "S",
-        17: "Cl",
-        18: "Ar",
-        19: "K",
-        20: "Ca",
-        21: "Sc",
-        22: "Ti",
-        23: "V",
-        24: "Cr",
-        25: "Mn",
-        26: "Fe",
-        27: "Co",
-        28: "Ni",
-        29: "Cu",
-        30: "Zn",
-        31: "Ga",
-        32: "Ge",
-        33: "As",
-        34: "Se",
-        35: "Br",
-        36: "Kr",
-        37: "Rb",
-        38: "Sr",
-        39: "Y",
-        40: "Zr",
-        41: "Nb",
-        42: "Mo",
-        43: "Tc",
-        44: "Ru",
-        45: "Rh",
-        46: "Pd",
-        47: "Ag",
-        48: "Cd",
-        49: "In",
-        50: "Sn",
-        51: "Sb",
-        52: "Te",
-        53: "I",
-        54: "Xe",
-        55: "Cs",
-        56: "Ba",
-        57: "La",
-        58: "Ce",
-        59: "Pr",
-        60: "Nd",
-        61: "Pm",
-        62: "Sm",
-        63: "Eu",
-        64: "Gd",
-        65: "Tb",
-        66: "Dy",
-        67: "Ho",
-        68: "Er",
-        69: "Tm",
-        70: "Yb",
-        71: "Lu",
-        72: "Hf",
-        73: "Ta",
-        74: "W",
-        75: "Re",
-        76: "Os",
-        77: "Ir",
-        78: "Pt",
-        79: "Au",
-        80: "Hg",
-        81: "Tl",
-        82: "Pb",
-        83: "Bi",
-        90: "Th",
-        92: "U",
-    }
+    species_names_dict = dict(zip(list(range(84)) + [90, 92], species_names_list, strict=False))
 
     frac_amounts = np.linspace((1 / 12) - (1 / 24), (12 / 12) - (1 / 24), 12)
     t_plus = 15  # months
@@ -1095,6 +719,7 @@ class CosmicRaySimulation:
         pad_pixels: int = 4,
         pad_mode: str = "constant",
         pad_value: int | float = 0,
+        rng=None,
     ):
         """
         Initialize a cosmic-ray simulation on a pixelated detector.
@@ -1142,6 +767,8 @@ class CosmicRaySimulation:
             Padding mode (passed to ``numpy.pad``), e.g., ``"constant"`` or ``"edge"``.
         pad_value : int or float, default=0
             Constant value to use when ``pad_mode="constant"``.
+        rng : hazard_simulator.ffrng.FastForwardRNG
+            The random number generator to use.
 
         Notes
         -----
@@ -1213,9 +840,13 @@ class CosmicRaySimulation:
         # Columns: Start/End/Bin Center/Bin Width/Mean # of particles
         self.num_part_table = None
 
+        # random number generator
+        self.rng = rng
+
     @classmethod
     def run_full_sim(
         cls,
+        rng,
         grid_size: int = 4088,  # num of pixels
         progress_bar: bool = False,
         apply_padding: bool = True,
@@ -1230,6 +861,8 @@ class CosmicRaySimulation:
 
         Parameters
         ----------
+        rng : hazard_simulator.ffrng.FastForwardRNG
+            The random number generator.
         grid_size : int, default=4088
             Number of pixels per side of the detector grid for each per-species run.
             Units: pixels.
@@ -1284,7 +917,10 @@ class CosmicRaySimulation:
         for idx in tqdm(
             range(len(cls.Z_list)), desc="Running simulation for each species", disable=not progress_bar
         ):
+            xrng = rng.copy()
+            rng.advance(2**30)
             sim = cls(
+                rng=xrng,
                 species_index=idx,
                 grid_size=grid_size,
                 progress_bar=False,
@@ -1441,13 +1077,12 @@ class CosmicRaySimulation:
         # Return the parent's PID in bit format.
         return parent_encoded
 
-    @staticmethod
-    def generate_angles(init_en, mass):
+    def generate_angles(self, init_en, mass):
         """Generate emission angles and velocity for a given initial energy and mass."""
         vel = np.sqrt((2 * init_en) / mass)
-        P = np.random.uniform(0, 1)
+        P = self.rng.uniform(0, 1)
         theta = np.arcsin(np.sqrt(P))
-        phi = np.random.uniform(0, 2 * np.pi)
+        phi = self.rng.uniform(0, 2 * np.pi)
         return theta, phi, vel  # unitless, unitless, m/s
 
     @staticmethod
@@ -2350,6 +1985,12 @@ class CosmicRaySimulation:
             dE_dx = self.dEdx_electron(current_energy)  # MeV/cm
             dE = dE_dx * s_cm  # MeV
 
+            # If we've reached zero kinetic energy, breaking prevents weird errors when we try to figure out
+            # "scattering" (what would that even mean?)
+            if current_energy <= 0:
+                current_energy = 0
+                break
+
             # Stop simulation if energy loss is negative; code added by Zac
             if dE < 0:
                 dE = current_energy  # MeV
@@ -2367,7 +2008,7 @@ class CosmicRaySimulation:
                 (13.6 / (beta_val1 * current_energy)) * np.sqrt(s_cm / X0) * (1 + 0.038 * np.log(s_cm / X0))
             )
             theta0_values.append(theta0)  # unitless
-            delta_theta = np.random.normal(
+            delta_theta = self.rng.normal(
                 0, theta0, size=2
             )  # generate 2D Gaussian on both transverse axes, unitless
             R = np.array(
@@ -2439,6 +2080,10 @@ class CosmicRaySimulation:
         s_cm = s * 1e-4  # cm
         delta_ray_counter = 1  # unitless
         primary_idx = (PID >> 14) & ((1 << 11) - 1)  # unitless
+
+        # rng splitting for delta rays
+        rng2 = self.rng.copy()
+        self.rng.advance(2**28)
 
         # create executor for delta rays
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -2516,20 +2161,12 @@ class CosmicRaySimulation:
                     delta_N = (K / 2) * (Z / A) * (z**2 / beta**2) * integral_value * rho * s_cm
 
                 # --- delta-ray event logic ---
-                if delta_N > 0:
-                    if delta_N < 1:
-                        # Bernoulli trial: produce 1 delta ray with probability delta_N
-                        n_delta = 1 if np.random.uniform(0, 1) < delta_N else 0
-                    else:
-                        # Poisson-draw number of delta rays when mean is >= 1
-                        n_delta = np.random.poisson(delta_N)
-                else:
-                    n_delta = 0
+                n_delta = rng2.poisson(delta_N) if delta_N > 0 else 0
 
                 for _ in range(n_delta):
                     accepted = False
                     while not accepted:
-                        x_inv = np.random.uniform(1 / T_max_val, 1 / T_min)
+                        x_inv = rng2.uniform(1 / T_max_val, 1 / T_min)
                         T_candidate = 1 / x_inv
                         accepted = True
                     T_delta = T_candidate  # MeV
@@ -2538,7 +2175,7 @@ class CosmicRaySimulation:
                         current_energy = 0
                         break
                     theta_delta = np.arccos(np.sqrt(T_delta / T_max_val))
-                    phi_delta = 2 * np.pi * np.random.uniform(0, 1)
+                    phi_delta = 2 * np.pi * rng2.uniform(0, 1)
                     theta_global, phi_global = self.transform_angles(theta, phi, theta_delta, phi_delta)
                     delta_ray_PID = CosmicRaySimulation.encode_pid(
                         self.species_index, primary_idx, delta_ray_counter
@@ -2559,6 +2196,12 @@ class CosmicRaySimulation:
                         )
                     )
 
+                # If we've reached zero kinetic energy, breaking prevents weird errors when we try to figure
+                # out "scattering" (what would that even mean?)
+                if current_energy <= 0:
+                    current_energy = 0
+                    break
+
                 # Multiple scattering for primary
                 mp = self.M
                 beta_val2 = np.sqrt(1 - (mp / (current_energy + mp)) ** 2)
@@ -2569,8 +2212,8 @@ class CosmicRaySimulation:
                     * (1 + 0.038 * np.log(s_cm / self.X0))
                 )
                 theta0_values.append(theta0)
-                delta_theta = np.random.normal(0, theta0)
-                delta_phi = np.random.uniform(0, 2 * np.pi)
+                delta_theta = rng2.normal(0, theta0)
+                delta_phi = rng2.uniform(0, 2 * np.pi)
                 vx = np.sin(theta) * np.cos(phi)
                 vy = np.sin(theta) * np.sin(phi)
                 vz = np.cos(theta)
@@ -2745,7 +2388,7 @@ class CosmicRaySimulation:
             lambda_value = num_part_table["Mean # of particles"].iat[j]
             if lambda_value <= 0 or not np.isfinite(lambda_value):
                 continue
-            poisson_samples = np.random.poisson(lambda_value, 1)
+            poisson_samples = self.rng.poisson(lambda_value, 1)
             count = int(poisson_samples.sum())
             primary_gcr_count += count
             if count == 0:
@@ -2755,9 +2398,9 @@ class CosmicRaySimulation:
             E_max = num_part_table["End Energy (eV/nuc)"].iat[j]  # eV/nucleon
             streaks = []
             for _ in range(count):
-                x = np.random.randint(0, num_pixels)
-                y = np.random.randint(0, num_pixels)
-                init_en = np.random.uniform(
+                x = min(self.rng.random() * num_pixels, num_pixels - 1)  # randint is deprecated
+                y = min(self.rng.random() * num_pixels, num_pixels - 1)
+                init_en = self.rng.uniform(
                     E_min, E_max
                 )  # in eV/nucleon, should I multiply through by A_list to make it eV?
                 theta, phi, vel = self.generate_angles(init_en, self.m_list[idx])

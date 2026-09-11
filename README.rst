@@ -1,4 +1,8 @@
-.. image:: https://codecov.io/github/Roman-HLIS-Cosmology-PIT/HAZARD-simulator/graph/badge.svg?token=W84I8gAWqx
+|badge1| |badge2|
+
+.. |badge1| image:: https://codecov.io/github/Roman-HLIS-Cosmology-PIT/HAZARD-simulator/graph/badge.svg
+
+.. |badge2| image:: https://github.com/Roman-HLIS-Cosmology-PIT/HAZARD-simulator/actions/workflows/smoke-test.yml/badge.svg
 
 GCR Simulation Framework — Main Scripts Overview (WORK IN PROGRESS)
 ###################################################################
@@ -12,17 +16,17 @@ NEW WORKFLOW STEPS
 .. code-block:: python
     
     import hazard_simulator.gcrsim as sim
-    import hazard_simulator.electronspread2 as es
+    import hazard_simulator.electronspread as es
     import hazard_simulator.ffrng as ffrng
 
     simulator = sim.CosmicRaySimulation # set up simulator object
-    data = simulator.run_full_sim() # third element in data is trajectory/LET info
 
     my_rng = ffrng.FastForwardRNG() # can also pass a seed number
+    data = simulator.run_full_sim(my_rng) # third element in data is trajectory/LET info
 
     #output_array below is in electrons, can set apply_gain to True and
     # send a gain_txt file (32x32 supercells) in order to get the array in DN
-    output_array = es.process_electrons_to_DN_by_blob2(rng_ff=my_rng,streaks=data[2],apply_gain=False)
+    output_array = es.process_electrons_to_DN(rng_ff=my_rng,streaks=data[2],apply_gain=False)
 
 
 GCRsim_v02i.py
