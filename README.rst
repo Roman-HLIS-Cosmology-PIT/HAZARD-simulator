@@ -11,7 +11,7 @@ HAZARD Simulator
 
 The High Atomic Z Astrophysical Radiation Dynamics (**HAZARD**) simulator is a framework for forecasting Galactic cosmic rays fluxes and simulating their passage through the photodiode volume of an NIR detector.
 
-The package is currently configured to simulate interactions with a Hg<sub>(1-x)</sub>Cd<sub>x</sub>Te semiconductor, where the molar ratio x is set to 0.445. 
+The package is currently configured to simulate interactions with a Hg\ :sub:`(1-x)`\Cd\ :sub:`x`\Te semiconductor, where the molar ratio x is set to 0.445. 
 
 HAZARD models the incident Galactic cosmic ray (GCR) population of the first 92 elemental species, as well as electrons, according to International Standard ISO 15390:2004(E), Space environment (natural and artificial) - Galactic cosmic ray model. An additional flux of ejected low-energy electrons resulting from the GCRs passing through the rest of the spacecraft before entering the Cold Sensing Module (CSM) and impacting the Wide Field Instrument (WFI) of the Nancy Grace Roman Space Telescope (NGRST).
 
