@@ -1072,7 +1072,7 @@ class CosmicRaySimulation:
         int
             The encoded 64-bit PID of the parent primary (lower 28 bits zeroed).
         """
-        # Zero out the lower 14 bits that represent the delta ray index.
+        # Zero out the lower 28 bits that represent the delta ray index.
         parent_encoded = encoded_pid & ~((1 << 28) - 1)
         # Return the parent's PID in bit format.
         return parent_encoded
@@ -1685,7 +1685,7 @@ class CosmicRaySimulation:
         p = np.sqrt(Ekin * (Ekin + 2 * mass))  # MeV
         return p / total_energy  # unitless
 
-    # NEW DELTA RAY POPULATION CODE BELOW
+    # DELTA RAY POPULATION CODE BELOW
 
     def _Eproj_min_from_electron_E(self, Te_MeV, Mproj_MeV):
         """
@@ -1938,7 +1938,7 @@ class CosmicRaySimulation:
         # Convert flux from per MeV to per eV
         return e_edges, E_e_mid_eV, F_e * 1e-6  # (s·sr·m²·eV)^-1
 
-    # END NEW DELTA RAY CODE
+    # END DELTA RAY CODE
 
     def propagate_delta_ray(self, heatmap, x, y, z, theta, phi, init_en, PID, streaks):
         """
@@ -2079,7 +2079,7 @@ class CosmicRaySimulation:
         theta_init, phi_init = theta, phi  # unitless
         s_cm = s * 1e-4  # cm
         delta_ray_counter = 1  # unitless
-        primary_idx = (PID >> 14) & ((1 << 11) - 1)  # unitless
+        primary_idx = (PID >> 28) & ((1 << 29) - 1)  # unitless
 
         # rng splitting for delta rays
         rng2 = self.rng.copy()
