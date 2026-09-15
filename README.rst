@@ -6,7 +6,8 @@
 
 ###################################################################
 
-## HAZARD Simulator
+HAZARD Simulator
+################
 
 The High Atomic Z Astrophysical Radiation Dynamics (**HAZARD**) simulator is a framework for forecasting Galactic cosmic rays fluxes and simulating their passage through the photodiode volume of an NIR detector.
 
@@ -16,7 +17,9 @@ HAZARD models the incident Galactic cosmic ray (GCR) population of the first 92 
 
 HAZARD takes these charge particle populations and uses Monte Carlo and the Bethe-Bloch equations to track how they lose energy and spawn secondary delta-ray particles as they travel through a single Sensor Chip Assembly (SCA) in the WFI. HAZARD calculates the corresponding charge generation and diffusion due to all of the particle interactions during a given timeframe (with the default exposure time, `dt`, set to 3.04 seconds) and outputs arrays of pixel values in units of either electrons or digital-numbers (DN), to be used as cosmic ray masks in the Roman science pipeline.
 
-## Overview
+Overview
+########
+
 The following scripts make up the core ingredients of HAZARD:
 
 `hazard_simulator.gcrsim`
@@ -28,8 +31,12 @@ Converts the data it obtains from `gcrsim`, which contains the energy particles 
 `hazard_simulator.ffrng`
 A standard random number generator packaged with additional functionality to help with deterministic reproducibility and multi-threading. Must be fed to both `gcrsim` and `electron_spread`.
 
+A more nuanced description of the HAZARD workflow and its various models can be found at:
 
-## Installation
+- `Model description <docs/model.rst>`_.
+
+Installation
+############
 
 HAZARD currently requires Python version 3.12 or higher.
 
@@ -47,7 +54,8 @@ python -m pip install -e .
 
 A full pipy release is in the works!
 
-## Example use
+Example use
+###########
 
 .. code-block:: python
     
