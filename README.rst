@@ -44,13 +44,13 @@ To clone this repo and install the package into a Python enviromnent, you can us
 
 .. code-block:: bash
 
-```
-git clone https://github.com/Roman-HLIS-Cosmology-PIT/HAZARD-simulator.git
-cd HAZARD-simulator
+    git clone https://github.com/Roman-HLIS-Cosmology-PIT/HAZARD-simulator.git
+    cd HAZARD-simulator
 
-python -m pip install --upgrade pip
-python -m pip install -e .
-```
+    python -m pip install --upgrade pip
+    python -m pip install -e .
+
+
 
 A full pipy release is in the works!
 
