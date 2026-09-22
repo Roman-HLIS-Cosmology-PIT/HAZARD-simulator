@@ -2079,7 +2079,7 @@ class CosmicRaySimulation:
         theta_init, phi_init = theta, phi  # unitless
         s_cm = s * 1e-4  # cm
         delta_ray_counter = 1  # unitless
-        primary_idx = (PID >> 14) & ((1 << 11) - 1)  # unitless
+        primary_idx = (PID >> 28) & ((1 << 29) - 1)  # unitless
 
         # rng splitting for delta rays
         rng2 = self.rng.copy()
@@ -2262,13 +2262,13 @@ class CosmicRaySimulation:
         hex color from self.color_list. Assumes:
           - PID is encoded as:
               7 bits: species index
-             11 bits: primary index (starting at 1)
-             14 bits: delta ray index (0 for primary)
+             29 bits: primary index (starting at 1)
+             28 bits: delta ray index (0 for primary)
           - self.color_list is a list of tuples (name, hex_code).
         """
-        # Extract the primary index: shift out the delta ray bits (14 bits)
-        #  and then mask with 11 bits (for primary indices).
-        species_idx = (PID >> (11 + 14)) & ((1 << 7) - 1)
+        # Extract the primary index: shift out the delta ray bits (28 bits)
+        #  and then mask with 29 bits (for primary indices).
+        species_idx = (PID >> (29 + 28)) & ((1 << 7) - 1)
         return self.color_list[species_idx][1]
 
     def run_sim(self, species_index=None):
