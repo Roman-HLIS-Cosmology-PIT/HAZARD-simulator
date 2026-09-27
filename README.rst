@@ -4,14 +4,58 @@
 
 .. |badge2| image:: https://github.com/Roman-HLIS-Cosmology-PIT/HAZARD-simulator/actions/workflows/smoke-test.yml/badge.svg
 
-GCR Simulation Framework — Main Scripts Overview (WORK IN PROGRESS)
 ###################################################################
 
-This repository implements a modular simulation pipeline for studying galactic cosmic ray (GCR) interactions with space-based detectors, specifically tailored for HgCdTe infrared arrays (e.g., as used in the Nancy Grace Roman Space Telescope). The framework enables detailed Monte Carlo simulations of particle events and advanced visualization of charge diffusion and detector response.
+HAZARD Simulator
+################
 
-Three primary scripts form the backbone of the simulation and analysis workflow:
+The High Atomic Z Astrophysical Radiation Dynamics (**HAZARD**) simulator is a framework for forecasting Galactic cosmic rays fluxes and simulating their passage through the photodiode volume of an NIR detector.
 
-NEW WORKFLOW STEPS
+The package is currently configured to simulate interactions with a Hg\ :sub:`(1-x)`\Cd\ :sub:`x`\Te semiconductor, where the molar ratio x is set to 0.445. 
+
+HAZARD models the incident Galactic cosmic ray (GCR) population of the first 92 elemental species, as well as electrons, according to International Standard ISO 15390:2004(E), Space environment (natural and artificial) - Galactic cosmic ray model. An additional flux of ejected low-energy electrons resulting from the GCRs passing through the rest of the spacecraft before entering the Cold Sensing Module (CSM) and impacting the Wide Field Instrument (WFI) of the Nancy Grace Roman Space Telescope (NGRST).
+
+HAZARD takes these charge particle populations and uses Monte Carlo and the Bethe-Bloch equations to track how they lose energy and spawn secondary delta-ray particles as they travel through a single Sensor Chip Assembly (SCA) in the WFI. HAZARD calculates the corresponding charge generation and diffusion due to all of the particle interactions during a given timeframe (with the default exposure time, `dt`, set to 3.04 seconds) and outputs arrays of pixel values in units of either electrons or digital-numbers (DN), to be used as cosmic ray masks in the Roman science pipeline.
+
+Overview
+########
+
+The following scripts make up the core ingredients of HAZARD:
+
+`hazard_simulator.gcrsim`
+Generates the initial GCR populations across all energy bins (spanning 10 MeV to 100 GeV for the ISO model and 1 keV to 10 MeV (**double check**) for the low-energy electron correction) and runs them through the Monte Carlo with steps of 0.1 microns inside a volume of 4.088 cm by 4.088 cm by 5 microns to generate the linear energy deposition (LET) data needed by `electron_spread`.
+
+`hazard_simulator.electron_spread`
+Converts the data it obtains from `gcrsim`, which contains the energy particles lost to the semiconductor lattice during their passing, into a discrete number of charges according to approximations of the Fano factor and the mean electron-hole creation energy made by fitting data from a 55Fe X-ray energy response test conducted in 2017 by the Detector Characterization Lab (DCL) at Goddard. These charge clouds are then distributed spatially according to a diffusion model taken from Macbeth, et al (2026 pre-release), specifically the sum-of-three Gaussian approximation to reduce `electron_spread`'s computational overhead. These final output image is sent as a numpy array with values given in electrons or DNs, as long as 32x32 superpixel gain map corresponding to that SCA is also passed along and `apply_gain` is set to `True`.
+
+`hazard_simulator.ffrng`
+A standard random number generator packaged with additional functionality to help with deterministic reproducibility and multi-threading. Must be fed to both `gcrsim` and `electron_spread`.
+
+A more nuanced description of the HAZARD workflow and its various models can be found at:
+
+- `Model description <docs/model.rst>`_.
+
+Installation
+############
+
+HAZARD currently requires Python version 3.12 or higher.
+
+To clone this repo and install the package into a Python enviromnent, you can use:
+
+.. code-block:: bash
+
+    git clone https://github.com/Roman-HLIS-Cosmology-PIT/HAZARD-simulator.git
+    cd HAZARD-simulator
+
+    python -m pip install --upgrade pip
+    python -m pip install -e .
+
+
+
+A full pipy release is in the works!
+
+Example use
+###########
 
 .. code-block:: python
     
@@ -28,156 +72,6 @@ NEW WORKFLOW STEPS
     # send a gain_txt file (32x32 supercells) in order to get the array in DN
     output_array = es.process_electrons_to_DN(rng_ff=my_rng,streaks=data[2],apply_gain=False)
 
-
-GCRsim_v02i.py
-==============
-
-*Purpose*: Core simulation engine for generating GCR events and their interactions within the detector medium.
-    
-*Key Features*:
-    
-- Monte Carlo Particle Simulation: Realistic GCR particle generation using customizable input parameters (flux, energy spectrum, incident angle, etc.).
-    
-- Energy Deposition Modeling: Tracks energy loss and charge creation for each event using stochastic models.
-    
-- Delta Ray Production: Implements Poisson statistics for simulating secondary electron (“delta ray”) creation.
-    
-- Data Export: Outputs event data as CSV or HDF5 for further processing.
-    
-*Typical Usage*:
-    
-.. code-block:: python
-  
-    from GCRsim_v02i import CosmicRaySimulation
-    
-    # Set up a simulation instance and run
-    sim = CosmicRaySimulation(config_file="config.yml")
-    sim.run()
-    sim.save("output_filename.h5")
-
-*Inputs*:
-    
-- Detector/material properties (as config file or script arguments)
-    
-- Simulation settings (particle rate, simulation time, etc.)
-    
-*Outputs*:
-    
-- Tabular files (CSV/HDF5) with event-level energy deposition, position, and particle ID. This is run for a single species only, as specified by the species index passed in the config.yml file.
-    
-electron_spread2.py
-===================
-
-*Purpose*: Simulates charge diffusion and conversion of deposited energy into electron count and digital number (DN) maps.
-    
-*Key Features*:
-    
-- Charge Diffusion Modeling: Convolves initial energy depositions with spatially varying Gaussian kernels to mimic realistic electron/hole cloud spreading.
-    
-- Electron Conversion: Converts energy loss to charge using physical constants (Fano factor, ionization energy, etc.).
-    
-- Downsampling: Aggregates high-resolution simulation results into low-resolution DN maps matching detector readout.
-    
-- Batch Processing: Efficiently processes large CSV/HDF5 event datasets in chunks.
-    
-*Typical Usage*:
-    
-.. code-block:: python
-
-    from electron_spread import process_electrons_to_DN
-    
-    process_electrons_to_DN(
-        csvfile="gcr_events.csv",
-        gain_txt="gain_table.txt",
-        det_pixels_lo=4096,
-        kernel_size_hi=50,
-        sigma=0.314,
-        output_DN_path="DN_map.npy"
-    )
-
-*Inputs*:
-    
-- Event list (CSV/HDF5) from GCRsim_v02f.py
-    
-- Detector gain/response table
-    
-*Outputs*:
-    
-- High-res and downsampled DN maps (NumPy arrays or image files)
-    
-GCR_GUI.py
-==========
-
-*Purpose*: Graphical user interface for interactive exploration and visualization of simulated GCR events and DN maps.
-    
-*Key Features*:
-    
-- Interactive Heatmap Viewer: Inspect downsampled and high-resolution DN maps with zoom, crosshair, and event selection.
-    
-- Overlay & Annotation: Visualize event positions, detector boundaries, and gridlines for spatial context.
-    
-- Event Inspection: Double-click to display detailed event info and high-res charge diffusion patterns.
-
-- Export & Save Options: Save current visualizations or simulation state for further analysis.
-    
-*Typical Usage*:
-
-.. code-block:: bash
-
-    python GCR_GUI.py
-
-or
-
-.. code-block:: python
-    
-    import GCR_GUI
-    GCR_GUI.run()
-
-*Inputs*:
-    
-- Output files from GCRsim_v02f.py and electron_spread.py (event lists, DN maps, etc.)
-    
-*Outputs*:
-    
-- Interactive visualizations
-    
-- Exported plots or event data (optional)
-
-Repository Structure
-####################
-
-::
-
-  HAZARD-simulator/
-  ├── Sample Outputs/          # Example simulated output data
-  ├── GCRsim_v02i.py           # Main GCR simulation engine
-  ├── electron_spread2.py       # Charge diffusion & DN map processor
-  ├── GCR_GUI.py               # Tkinter-based GUI for visualization
-  ├── requirements.txt         # List of Python dependencies
-  ├── README.md                # (You are here!)
-  └── [other scripts/modules]  # (e.g., utility modules, tests)</pre>
-
-Quickstart
-Install dependencies:
-
-.. code-block: bash
-    pip install -r requirements.txt
-
-Run a full simulation pipeline:
-
-#. Simulate GCR events::
-
-       python GCRsim_v02i.py --config config.yml --output gcr_events.h5
-
-#. Process events to create DN maps::
-
-       python electron_spread2.py --input gcr_events.h5 --output DN_map.npy
-
-#. Visualize results with GUI::
-
-python GCR_GUI.py
-
-Note: The GUI requires tkinter. On some Linux systems you may need to run sudo apt-get install python3-tk.
 
 Questions or Issues?
 Please open an issue or submit a pull request for bug fixes, enhancements, or documentation improvements.

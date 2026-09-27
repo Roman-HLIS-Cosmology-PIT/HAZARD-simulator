@@ -6,10 +6,17 @@ authors:
   - family-names: Harbo Torres
     given-names: Anthony
     orcid: "0009-0000-7581-9916"
+  - family-names: Hirata
+    given-names: Christopher
+    orcid: "NNNN-NNNN-NNNN-NNNN"
+  - family-names: Koivu
+    given-names: Emily
+    orcid: "NNNN-NNNN-NNNN-NNNN"
   - family-names: Brutko
     given-names: Zachary
-date-released: "2024-07-31"
-url: "https://github.com/aeharbo/HAZARD-simulator"
+  - family-names: Ayers
+    given-names: Brynn
+url: "https://github.com/Roman-HLIS-Cosmology-PIT/HAZARD-simulator"
 abstract: "A modular Python framework for simulating galactic cosmic ray (GCR) interactions in space-based detectors, including charge diffusion modeling and visualization tools."
 keywords:
   - cosmic rays
