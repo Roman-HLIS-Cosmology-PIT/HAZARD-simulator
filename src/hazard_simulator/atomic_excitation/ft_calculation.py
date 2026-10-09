@@ -58,18 +58,14 @@ print(len(sample_material["T_ARRAY"]))
 
 
 material = simple_material(ne, quality, omega_naught)
+c = 2.99e8
 
-
-def ft_calculation(chi_t, chi_l, c, beta, t):
+def ft_calculation(chi_dict, beta, t):
     """Calculate the rate of energy deposition events as a charged particle moves through the detector.
     Parameters:
     ---------
-    chi_t : complex
-        The transverse susceptibility
-    chi_l : complex
-        The longitudinal susceptibility.
-    c : float
-        The speed of light.
+    chi_dict : dictionary
+
     beta : float
         The velocity of the charged particle relative to the speed of light.
     t : float
@@ -83,7 +79,12 @@ def ft_calculation(chi_t, chi_l, c, beta, t):
     # Successfully convert imaginary numbers to real numbers
     lower_bound = t / (c * beta)
     upper_bound = np.inf
-
+    chi_e = np.array(chi_dict["CHI_E"])
+    n_hat = np.array([1.0, 1.0, 0.0])
+    n_hat /= np.linalg.norm(n_hat)
+    chi_l = np.dot(chi_e, n_hat)*n_hat
+    chi_t = chi_e - chi_l
+    
     def integrand(q):
         return (
             ((chi_l.imag) / (abs(1 + chi_l) ** 2))
@@ -96,3 +97,4 @@ def ft_calculation(chi_t, chi_l, c, beta, t):
 
     result, error = sp.integrate.quad(integrand, lower_bound, upper_bound)
     return result
+
