@@ -3,7 +3,7 @@
 name = "hazard_simulator"
 license = "MIT"
 license-files = ["LICENSE"]
-readme = "README.md"
+readme = "README.rst"
 authors = [
     { name = "Anthony Harbo Torres", email = "tony.harbo@gmail.com" }
 ]
